@@ -1,0 +1,37 @@
+/* ===========================================================================
+   YEARLY THEME — DEF CON 34 "Agency"
+   ---------------------------------------------------------------------------
+   This is the ONE file to change each year to align the app with the con theme.
+   Swap the raw palette below (and re-point the semantic roles if the new theme
+   needs it); nothing else in the app references raw hexes. Source:
+   https://defcon.org/html/defcon-34/dc-34-theme.html
+   =========================================================================== */
+:root {
+  /* ---- Raw DC34 palette (the only hexes that change year to year) ---------- */
+  --dc-navy: #0d294a; /* primary dark   */
+  --dc-blue: #017fa4; /* primary blue   */
+  --dc-teal: #105f66; /* secondary teal */
+  --dc-cyan: #6ccdb8; /* accent cyan    */
+  --dc-gold: #f1b435; /* accent gold    */
+  --dc-red: #e0004e; /* accent red     */
+
+  /* ---- Semantic roles (what the UI references via Tailwind tokens) --------- */
+  --base: #0b1220; /* page background — navy-tinted near-black */
+  --foreground: #e8eef5; /* default text — cool off-white            */
+  --brand: var(--dc-blue); /* primary actions   */
+  --accent: var(--dc-cyan); /* links / highlights */
+  --highlight: var(--dc-gold); /* attention         */
+  --danger: var(--dc-red); /* destructive       */
+
+  /* ---- Status-workflow stage hues (drawn from the palette) ----------------- */
+  --status-pending: var(--dc-gold);
+  /* generated = the "art made in Figma" stage; a blue+red palette blend gives a
+     distinct violet that reads as a design step without leaving the palette. */
+  --status-generated: color-mix(in oklab, var(--dc-blue), var(--dc-red));
+  --status-printed: var(--dc-blue);
+  --status-delivered: var(--dc-cyan);
+  /* sorted = staged after delivery; a gold+cyan blend (lime) keeps it distinct
+     from the neighbouring cyan/teal stages while staying on-palette. */
+  --status-sorted: color-mix(in oklab, var(--dc-gold), var(--dc-cyan));
+  --status-deployed: var(--dc-teal);
+}

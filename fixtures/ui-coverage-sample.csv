@@ -1,0 +1,17 @@
+Map#,Sign Text,Type,Size,Qty,Location,Easel,Zone,Tags,Deploy Slot,Notes,Requestor
+M-201,Welcome to DEF CON,,4'x8' Coroplast Double-Sided,1,Main Entrance,N,LVCC-L1,priority;wayfinding,THU_AM,Meterboard + double-sided; needs-hardware fires via size not easel,Goons
+M-202,Talks Track 1,,22x28,2,Level 2 Foyer,Y,LVCC-L2,stage,WED_PM,Easel sign; qty 2 shows x2 badge in list,Speaker Ops
+M-203,Registration This Way,Directional,24x36,1,West Hall Entrance,Y,LVCC-H1,registration,THU_AM,Explicit Type override wins over size inference,Reg
+M-204,Contest Stage,,24x36,1,Contest Area,N,LVCC-L3,contest;priority,FRI_AM,Infers 24x36 type; pairs with the duplicate below,Contest
+M-204,Contest Stage,,24x36,1,Contest Area,N,LVCC-L3,contest;priority,FRI_AM,EXACT in-file duplicate of M-204 -> duplicate badge + likely-duplicate checkbox,Contest
+M-205,Diamond Ballroom Welcome,,Banner 3'x6',1,Diamond Ballroom 3,N,LVCC-NH,party;community,SAT_PM,North Hall zone (LVCC-NH); Diamond placement; infers Banner,North Goons
+M-206,Flying Sign Vendor Hall,,Flying Socks 21x42,1,Vendor Hall,N,LVCC-H2,vendor;flying-sign,SAT_AM,Infers Socks form type,Vendor
+M-207,Outdoor Marquee,,8'x20' Vinyl,1,Outdoor Plaza,N,LVCC-H3,sponsor;banner,SUN_AM,Infers 8'x20' form type,Sponsorship
+M-208,Chillout Lounge,,12x18,3,Atrium,N,LVCC-L1,chillout,FRI_PM,Odd size falls back to generic Sign type; qty 3,Chill
+M-209,Party Tonight,,18x24,5,Bar Area,N,LVCC-L2,bar;party,SUN_PM,Large qty x5; odd size -> Sign type,Parties
+M-210,Sponsor Backdrop,,4'x8' Foamcore,1,Main Stage,N,LVCC-L3,sponsor;rotating,Weds AM,Slot alias Weds AM normalizes to WED_AM; single-sided meterboard,Sponsorship
+M-211,Workshop Wayfinding,Directional,24x36,1,N252 Workshop Room,N,LVCC-NH,workshop;wayfinding,Thurs PM,Slot alias Thurs PM normalizes to THU_PM; N2xx room in North Hall,Workshops
+M-212,Bogus Zone Test,,22x28,1,Unknown Spot,N,LVCC-L9,priority;bogustag,SAT_AM,WARNINGS (still valid): unknown zone LVCC-L9 + unknown tag bogustag,QA
+M-213,Unrecognized Slot Test,,22x28,1,Hallway A,N,LVCC-L1,wayfinding,Funday,WARNING (still valid): unrecognized slot Funday -> slot left empty,QA
+M-214,,Directional,12x18,1,Hallway B,N,LVCC-L1,wayfinding,FRI_PM,INVALID: missing sign text,QA
+,Orphan Sign No ID,,22x28,1,Storage Room,N,LVCC-L1,priority,THU_AM,INVALID: missing item ID (Map#),QA

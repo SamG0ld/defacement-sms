@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Least privilege: CI only needs to read the repo (Playwright posts check
+# annotations via the default read-only token).
+permissions:
+  contents: read
+
+jobs:
+  lint-type-unit:
+    name: Lint, typecheck, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # npm install (not `npm ci`): the lockfile is generated on Windows and omits
+      # Linux-only optional deps (@emnapi/* WASM fallbacks), which `npm ci` rejects.
+      # `npm install` resolves per-platform — same as the Docker build.
+      - run: npm install
+      - run: npx prisma generate
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npx prisma validate
+      - run: npm test
+
+  integration:
+    name: Integration tests (Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: defacement_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://test:test@localhost:5432/defacement_test
+      DIRECT_URL: postgresql://test:test@localhost:5432/defacement_test
+      ALLOW_TEST_DB_RESET: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # npm install (not `npm ci`): the lockfile is generated on Windows and omits
+      # Linux-only optional deps (@emnapi/* WASM fallbacks), which `npm ci` rejects.
+      # `npm install` resolves per-platform — same as the Docker build.
+      - run: npm install
+      - run: npx prisma generate
+      - run: npm run test:integration
+
+  e2e:
+    name: E2E smoke (Playwright)
+    runs-on: ubuntu-latest
+    env:
+      AUTH_SECRET: smoke-test-secret-not-real
+      DATABASE_URL: postgresql://localhost:5432/unused
+      AUTH_GOOGLE_ID: smoke-google-id
+      AUTH_GOOGLE_SECRET: smoke-google-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # npm install (not `npm ci`): the lockfile is generated on Windows and omits
+      # Linux-only optional deps (@emnapi/* WASM fallbacks), which `npm ci` rejects.
+      # `npm install` resolves per-platform — same as the Docker build.
+      - run: npm install
+      - run: npx prisma generate
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e

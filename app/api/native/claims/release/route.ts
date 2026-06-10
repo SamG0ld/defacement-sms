@@ -1,0 +1,16 @@
+import { releaseRequestSchema } from "@/lib/deploy/contract";
+import { requireApiSession, runApi } from "@/lib/deploy/api-session";
+import { hasRole } from "@/lib/rbac";
+import { releaseSigns } from "@/lib/deploy/service";
+
+// POST /api/native/claims/release — drop a claim lock. A crew releases its own
+// claims; a lead+/admin may force-release any claim (a crew that left the floor
+// without releasing).
+export async function POST(req: Request): Promise<Response> {
+  return runApi(async () => {
+    const actor = await requireApiSession();
+    const input = releaseRequestSchema.parse(await req.json());
+    const force = hasRole(actor.role, "lead");
+    return releaseSigns(input, actor, force);
+  });
+}

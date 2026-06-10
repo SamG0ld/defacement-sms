@@ -1,0 +1,11 @@
+Map#,Sign Text,Type,Size,Qty,Location,Easel,Zone,Tags,Deploy Slot,Notes
+M-201,Welcome to DEF CON,Banner,4'x8' Foamcore Double-Sided,1,Main Entrance,N,LVCC-L1,priority;wayfinding,THU_AM,Hang high
+M-202,Talks Track 1,Informational,18x24,1,Level 2,Y,LVCC-L2,stage,Weds AM,
+DC-101,Registration This Way,Directional,24x36,2,West Hall,Y,LVCC-L1,registration,THU_AM,Existing-duplicate test
+M-203,Contest Stage,Poster,24x36,1,Contest Area,N,LVCC-L3,contest;priority,FRI_AM,
+M-203,Contest Stage,Poster,24x36,1,Contest Area,N,LVCC-L3,contest;priority,FRI_AM,In-file duplicate
+M-204,,Directional,12x18,1,Hallway,N,LVCC-L1,wayfinding,FRI_PM,Missing sign text (invalid)
+M-205,Vendor Hall,Banner,48x96,1,Vendor Entrance,N,LVCC-L9,vendor;bogustag,SAT_AM,Unknown zone + tag warnings
+M-206,Chillout Lounge,Directional,12x18,3,Atrium,N,LVCC-L1,chillout,Funday,Unrecognized slot warning
+M-207,Sponsor Stage,Banner,36x48,1,Main Stage,N,LVCC-L3,sponsor;stage;rotating,SAT_PM,
+M-208,Party Tonight,Poster,18x24,5,Bar,N,LVCC-L2,bar,SUN_PM,Large quantity

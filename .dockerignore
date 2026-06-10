@@ -1,0 +1,33 @@
+# Build context excludes — keep the image small and the build reproducible.
+node_modules
+.next
+out
+.git
+.github
+app/generated
+
+# Local env / secrets (never bake into an image)
+.env*
+*.pem
+*.key
+credentials.json
+
+# Tests / coverage / reports
+tests
+coverage
+test-results
+playwright-report
+playwright/.cache
+
+# Docs / planning / editor
+*.md
+.vscode
+.idea
+.claude
+
+# OS / misc
+.DS_Store
+Thumbs.db
+*.log
+outputs
+screenshots

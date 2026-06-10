@@ -1,0 +1,97 @@
+@import "tailwindcss";
+/* The year's identity (palette + role mapping). Swap this file each con year. */
+@import "./theme.css";
+
+/* Expose the semantic role tokens to Tailwind so `bg-brand`, `text-accent`,
+   `border-accent`, `bg-danger`, `font-reading`, etc. resolve to the year's
+   values. This mapping is stable across years; only theme.css changes. */
+@theme inline {
+  --color-base: var(--base);
+  --color-brand: var(--brand);
+  --color-accent: var(--accent);
+  --color-highlight: var(--highlight);
+  --color-danger: var(--danger);
+  --font-sans: var(--font-lato);
+  --font-reading: var(--font-atkinson);
+}
+
+body {
+  background: var(--base);
+  color: var(--foreground);
+  font-family: var(--font-lato), system-ui, sans-serif;
+}
+
+/* Faint dot-grid backdrop (auth screen), tinted toward the theme accent.
+   Masked with a radial gradient so the dots are strongest behind the content
+   and fade out toward the edges. */
+.dot-grid {
+  background-image: radial-gradient(
+    circle,
+    color-mix(in oklab, var(--accent) 22%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 22px 22px;
+  -webkit-mask-image: radial-gradient(
+    ellipse 70% 70% at 50% 45%,
+    #000 25%,
+    transparent 80%
+  );
+  mask-image: radial-gradient(
+    ellipse 70% 70% at 50% 45%,
+    #000 25%,
+    transparent 80%
+  );
+}
+
+/* Themed component primitives. These set COLOR only (driven by the role tokens);
+   each call site keeps its own layout utilities (rounded / padding / text-size)
+   so the same class works for buttons of different sizes. */
+@layer components {
+  .btn-primary {
+    background: var(--brand);
+    color: #ffffff;
+  }
+  .btn-primary:hover {
+    background: color-mix(in oklab, var(--brand) 85%, white);
+  }
+
+  .btn-danger {
+    background: var(--danger);
+    color: #ffffff;
+  }
+  .btn-danger:hover {
+    background: color-mix(in oklab, var(--danger) 85%, white);
+  }
+
+  /* Status badges: tinted background + border + lightened text, all derived
+     from one --status-* var so even the dark hues stay legible on the dark
+     base. Pair with `rounded border px-2 py-0.5 text-xs` at the call site. */
+  .badge-pending,
+  .badge-generated,
+  .badge-printed,
+  .badge-delivered,
+  .badge-sorted,
+  .badge-deployed {
+    background: color-mix(in oklab, var(--badge) 16%, transparent);
+    border-color: color-mix(in oklab, var(--badge) 45%, transparent);
+    color: color-mix(in oklab, var(--badge) 65%, white);
+  }
+  .badge-pending {
+    --badge: var(--status-pending);
+  }
+  .badge-generated {
+    --badge: var(--status-generated);
+  }
+  .badge-printed {
+    --badge: var(--status-printed);
+  }
+  .badge-delivered {
+    --badge: var(--status-delivered);
+  }
+  .badge-sorted {
+    --badge: var(--status-sorted);
+  }
+  .badge-deployed {
+    --badge: var(--status-deployed);
+  }
+}

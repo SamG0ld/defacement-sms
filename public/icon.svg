@@ -1,0 +1,14 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Defacement SMS">
+  <!-- Maskable: full-bleed background, glyph kept inside the central 80% safe zone. -->
+  <rect width="512" height="512" fill="#0b1220" />
+  <!-- Map pin (field deployment) -->
+  <path
+    d="M256 120c-62 0-112 50-112 112 0 78 92 162 108 176a6 6 0 0 0 8 0c16-14 108-98 108-176 0-62-50-112-112-112Z"
+    fill="#017fa4"
+  />
+  <!-- Sign plate inside the pin head -->
+  <rect x="200" y="186" width="112" height="80" rx="10" fill="#0b1220" />
+  <rect x="216" y="204" width="80" height="10" rx="5" fill="#6ccdb8" />
+  <rect x="216" y="226" width="80" height="10" rx="5" fill="#6ccdb8" />
+  <rect x="216" y="248" width="52" height="10" rx="5" fill="#f1b435" />
+</svg>

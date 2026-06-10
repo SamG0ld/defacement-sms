@@ -1,0 +1,495 @@
+// DEF CON Defacement SMS - Prisma schema
+// Domain ported from the prior Flask app's SQL schema.
+// User PK is cuid (NextAuth convention); domain tables use Int autoincrement
+// to keep parity with the Flask app for imports and spreadsheet refs.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================
+// Auth & Users
+// ============================================================
+
+enum UserRole {
+  admin
+  lead
+  volunteer
+}
+
+model User {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  name             String?
+  image            String?
+  emailVerified    DateTime?
+  role             UserRole  @default(volunteer)
+  isActive         Boolean   @default(true)
+  tokenVersion     Int       @default(0)
+  // SHA-256 hex of the invitation token. The plaintext token only ever
+  // travels in the email link; the DB stores the hash so a Neon breach
+  // cannot trivially convert unused invites into accounts.
+  invitationTokenHash String?   @unique @map("invitation_token_hash")
+  invitationExpiry    DateTime?
+  invitedAt        DateTime?
+  firstLoginAt     DateTime?
+  lastLoginAt      DateTime?
+  profileCompleted Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  invitedById String?
+  invitedBy   User?   @relation("UserInvites", fields: [invitedById], references: [id])
+  invitees    User[]  @relation("UserInvites")
+
+  accounts Account[]
+  sessions Session[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ============================================================
+// Domain
+// ============================================================
+
+enum SignStatus {
+  pending
+  generated // art produced in Figma (between intake and print)
+  printed
+  delivered
+  sorted // staged by destination after delivery, before deploy
+  deployed
+}
+
+model Zone {
+  id                 Int      @id @default(autoincrement())
+  zoneCode           String   @unique @map("zone_code")
+  zoneName           String   @map("zone_name")
+  building           String?
+  floor              String?
+  deploymentPriority Int      @default(1) @map("deployment_priority")
+  isActive           Boolean  @default(true) @map("is_active")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  locations Location[]
+  signs     Sign[]
+  floorMaps FloorMap[]
+
+  @@map("zones")
+}
+
+// A venue floor image, managed in-app (admin) rather than bundled at build time.
+// Image bytes live in the DB (Postgres bytea) and are served by the cached,
+// auth-gated route app/api/maps/[key]/route.ts. `key` is the stable slug used in
+// URLs and stored on Sign.mapFloor. Replaces the old static lib/floor-maps.ts
+// registry + public/maps/*.png so maps can be added/replaced/disabled at runtime
+// (e.g. Halls + North Hall when this year's assets land). Pins are percentages
+// over the image, so the stored width/height are advisory metadata only.
+model FloorMap {
+  id          Int      @id @default(autoincrement())
+  key         String   @unique
+  label       String
+  building    String?
+  floor       String?
+  // The deployment zone this map represents, if any. Used to derive a sign's
+  // default floor from its zone (see lib/sign-pin.ts). Optional: a one-off map
+  // (e.g. a village layout) need not map to a zone.
+  zoneId      Int?     @map("zone_id")
+  imageData   Bytes    @map("image_data")
+  contentType String   @map("content_type")
+  width       Int?
+  height      Int?
+  enabled     Boolean  @default(true)
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  zone  Zone?      @relation(fields: [zoneId], references: [id])
+  rooms Location[]
+
+  @@index([zoneId])
+  @@index([enabled, sortOrder])
+  @@map("floor_maps")
+}
+
+model Location {
+  id           Int      @id @default(autoincrement())
+  locationCode String   @unique @map("location_code")
+  building     String
+  floor        String?
+  section      String?
+  zoneId       Int?     @map("zone_id")
+  isActive     Boolean  @default(true) @map("is_active")
+  notes        String?
+  // Venue-map pin (percentages 0–100 on the floor image). Set once per room and
+  // reused year over year for the stable LVCC levels. Signs referencing this
+  // location inherit the pin (see Sign.locationId).
+  mapX         Float?   @map("map_x")
+  mapY         Float?   @map("map_y")
+  // The floor map this room sits on. Lets rooms attach to a map directly rather
+  // than only via zone (so a map can be reassigned without re-zoning). Optional
+  // while rooms are still zone-driven; populated as floor maps take over.
+  floorMapId   Int?     @map("floor_map_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  zone     Zone?     @relation(fields: [zoneId], references: [id])
+  floorMap FloorMap? @relation(fields: [floorMapId], references: [id], onDelete: SetNull)
+  signs    Sign[]
+
+  @@index([zoneId])
+  @@index([floorMapId])
+  @@map("locations")
+}
+
+model SignTemplate {
+  id               Int      @id @default(autoincrement())
+  templateName     String   @map("template_name")
+  signType         String?  @map("sign_type")
+  basePsdPath      String?  @map("base_psd_path")
+  widthInches      Decimal? @map("width_inches") @db.Decimal(6, 2)
+  heightInches     Decimal? @map("height_inches") @db.Decimal(6, 2)
+  textLayerName    String?  @map("text_layer_name")
+  fontName         String?  @map("font_name")
+  fontSizeMax      Int?     @map("font_size_max")
+  fontSizeMin      Int?     @map("font_size_min")
+  textColor        String?  @map("text_color")
+  textAlignment    String?  @map("text_alignment")
+  figmaFileKey     String?  @map("figma_file_key")
+  figmaComponentId String?  @map("figma_component_id")
+  figmaTextNodeIds String?  @map("figma_text_node_ids")
+  figmaPageId      String?  @map("figma_page_id")
+  textZones        String?  @map("text_zones")
+  configJson       String?  @map("config_json")
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  signs Sign[]
+
+  @@map("sign_templates")
+}
+
+model Sign {
+  id       Int    @id @default(autoincrement())
+  itemId   String @map("item_id")
+  signText String @map("sign_text")
+  signType String @map("sign_type")
+
+  // Request tracking
+  requestor      String?
+  requestorEmail String?  @map("requestor_email")
+  requestDate    DateTime @default(now()) @map("request_date")
+
+  // Specifications
+  size        String
+  quantity    Int     @default(1)
+  doubleSided Boolean @default(false) @map("double_sided")
+  needsEasel  Boolean @default(false) @map("needs_easel")
+
+  // Placement
+  placementArea      String?   @map("placement_area")
+  exactDestination   String?   @map("exact_destination")
+  zoneId             Int?      @map("zone_id")
+  deploymentPriority Int       @default(2) @map("deployment_priority")
+  deployByDate       DateTime? @map("deploy_by_date") @db.Date
+
+  // Venue-map pin. A sign resolves its pin as: own override (mapX/mapY/mapFloor)
+  // → else its registry room (locationId → Location.mapX/mapY) → else unplaced.
+  // See lib/sign-pin.ts.
+  locationId Int?    @map("location_id")
+  mapX       Float?  @map("map_x")
+  mapY       Float?  @map("map_y")
+  mapFloor   String? @map("map_floor")
+
+  // Cost
+  costPerUnit Decimal? @map("cost_per_unit") @db.Decimal(10, 2)
+  totalCost   Decimal? @map("total_cost") @db.Decimal(10, 2)
+
+  // Status workflow
+  status     SignStatus @default(pending)
+  approvedBy String?    @map("approved_by")
+  approvedAt DateTime?  @map("approved_at")
+
+  // Art generation
+  templateId          Int?     @map("template_id")
+  psdGenerated        Boolean  @default(false) @map("psd_generated")
+  psdFilepath         String?  @map("psd_filepath")
+  psdApproved         Boolean  @default(false) @map("psd_approved")
+  fittedText          String?  @map("fitted_text")
+  calculatedFontSize  Int?     @map("calculated_font_size")
+  legibilityScore     Decimal? @map("legibility_score") @db.Decimal(3, 2)
+  needsManualReview   Boolean  @default(false) @map("needs_manual_review")
+  generationPipeline  String?  @map("generation_pipeline")
+  figmaInstanceNodeId String?  @map("figma_instance_node_id")
+  previewImagePath    String?  @map("preview_image_path")
+  exportPdfPath       String?  @map("export_pdf_path")
+  generationError     String?  @map("generation_error")
+
+  // Event scheduling (rotating signs)
+  eventStart     DateTime? @map("event_start")
+  eventEnd       DateTime? @map("event_end")
+  deploymentSlot String?   @map("deployment_slot")
+
+  // Delivery
+  deliveredBy String?   @map("delivered_by")
+  deliveredAt DateTime? @map("delivered_at")
+
+  // Deployment
+  deployedBy          String?   @map("deployed_by")
+  deployedAt          DateTime? @map("deployed_at")
+  deploymentNotes     String?   @map("deployment_notes")
+  equipmentCheckedOut Boolean   @default(false) @map("equipment_checked_out")
+  equipmentReturned   Boolean   @default(false) @map("equipment_returned")
+
+  // Field-deployment claim (M6). A crew claims a `sorted` sign for deployment;
+  // the claim is an exclusive lock (claimedByCrewId non-null = held), orthogonal
+  // to status — the sign stays `sorted` while claimed and only moves to
+  // `deployed` on a deploy event. No FK to Crew: crews are soft-deleted
+  // (Crew.isActive), so a dangling claimedByCrewId can't outlive a hard delete,
+  // and this matches the codebase convention of free-string/loose user refs
+  // (deployedBy, StatusHistory.changedBy). claimedByUserId records which crew
+  // member performed the claim (denormalized, like deployedBy).
+  claimedByCrewId Int?      @map("claimed_by_crew_id")
+  claimedByUserId String?   @map("claimed_by_user_id")
+  claimedAt       DateTime? @map("claimed_at")
+  // Latest deploy photo for cheap list/map rendering; full history lives in
+  // DeployEvent. Patched async after the Blob upload completes.
+  deployPhotoUrl  String?   @map("deploy_photo_url")
+
+  // Metadata
+  notes      String?
+  isTestData Boolean  @default(false) @map("is_test_data")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  zone           Zone?               @relation(fields: [zoneId], references: [id])
+  location       Location?           @relation(fields: [locationId], references: [id])
+  template       SignTemplate?       @relation(fields: [templateId], references: [id])
+  statusHistory  StatusHistory[]
+  tagAssignments SignTagAssignment[]
+
+  @@index([status])
+  @@index([requestor])
+  @@index([zoneId])
+  @@index([locationId])
+  @@index([deploymentPriority])
+  @@index([signType])
+  @@index([itemId])
+  @@index([eventStart])
+  @@index([deploymentSlot])
+  @@index([templateId])
+  @@index([generationPipeline])
+  // Composite indexes for the list page's filter+sort (filter col first, then the
+  // [deploymentPriority, itemId] sort) so a status/zone-filtered list is one scan.
+  @@index([status, deploymentPriority, itemId])
+  @@index([zoneId, deploymentPriority, itemId])
+  // Field-deployment: "my crew's claimed signs" and "claimable sorted signs".
+  @@index([claimedByCrewId])
+  @@index([status, claimedByCrewId])
+  @@map("signs")
+}
+
+model StatusHistory {
+  id        Int      @id @default(autoincrement())
+  signId    Int      @map("sign_id")
+  oldStatus String?  @map("old_status")
+  newStatus String?  @map("new_status")
+  changedBy String?  @map("changed_by")
+  changedAt DateTime @default(now()) @map("changed_at")
+  notes     String?
+
+  sign Sign @relation(fields: [signId], references: [id], onDelete: Cascade)
+
+  @@index([signId])
+  @@map("status_history")
+}
+
+model SignTag {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  color       String   @default("#00BCD4")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  signAssignments SignTagAssignment[]
+
+  @@map("sign_tags")
+}
+
+model SignTagAssignment {
+  signId Int @map("sign_id")
+  tagId  Int @map("tag_id")
+
+  sign Sign    @relation(fields: [signId], references: [id], onDelete: Cascade)
+  tag  SignTag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([signId, tagId])
+  // The composite PK only indexes the signId-leading direction; filtering the
+  // list by tag does the reverse lookup on tag_id, so index it.
+  @@index([tagId])
+  @@map("sign_tag_assignments")
+}
+
+// ============================================================
+// Field deployment (M6)
+// ============================================================
+
+// A deployment crew — self-serve, created on the floor, flexible membership
+// (1+). Crews are soft-deleted (isActive) rather than hard-deleted, so a
+// Sign.claimedByCrewId never dangles past a delete. createdByUserId is a loose
+// reference (no FK), matching the codebase's actor-reference convention.
+model Crew {
+  id              Int          @id @default(autoincrement())
+  name            String
+  createdByUserId String       @map("created_by_user_id")
+  isActive        Boolean      @default(true) @map("is_active")
+  createdAt       DateTime     @default(now()) @map("created_at")
+
+  members CrewMember[]
+
+  @@index([isActive])
+  @@map("crews")
+}
+
+// Crew membership join. Composite PK mirrors SignTagAssignment; the reverse
+// (userId-leading) lookup is indexed. crewId cascades so removing a crew clears
+// its memberships; userId is a loose reference (no FK), like other user refs.
+model CrewMember {
+  crewId   Int      @map("crew_id")
+  userId   String   @map("user_id")
+  joinedAt DateTime @default(now()) @map("joined_at")
+
+  crew Crew @relation(fields: [crewId], references: [id], onDelete: Cascade)
+
+  @@id([crewId, userId])
+  @@index([userId])
+  @@map("crew_members")
+}
+
+// Append-only deploy log: who/what/when for claims-to-deploy and photo confirms.
+// Deliberately FK-free (like AuditLog) so it survives the sign/crew it records
+// being deleted. clientId is the offline-client idempotency key — a unique
+// constraint makes replay a no-op. status is "applied" (this event set the
+// sign's terminal deployed state) or "conflict" (a later/duplicate deploy of an
+// already-deployed sign — recorded for after-action review, doesn't overwrite).
+model DeployEvent {
+  id               Int      @id @default(autoincrement())
+  clientId         String   @unique @map("client_id")
+  signId           Int      @map("sign_id")
+  crewId           Int?     @map("crew_id")
+  deployedByUserId String?  @map("deployed_by_user_id")
+  deployedByEmail  String?  @map("deployed_by_email")
+  deployedAt       DateTime @map("deployed_at")
+  notes            String?
+  photoUrl         String?  @map("photo_url")
+  // Only "applied" or "conflict" are ever written (duplicates are never
+  // persisted — see lib/deploy/resolve.ts classifyDeploys). Kept as a free String
+  // rather than a Postgres enum to avoid a migration for a two-value, append-only
+  // log column.
+  status           String
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([signId])
+  @@index([crewId])
+  @@index([createdAt])
+  @@map("deploy_events")
+}
+
+// ============================================================
+// Equipment tracking
+// ============================================================
+
+model EquipmentType {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  category  String?
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  inventory EquipmentInventory[]
+
+  @@map("equipment_types")
+}
+
+model EquipmentInventory {
+  id              Int      @id @default(autoincrement())
+  equipmentTypeId Int      @map("equipment_type_id")
+  year            Int
+  countStartOfCon Int      @default(0) @map("count_start_of_con")
+  countEndOfCon   Int      @default(0) @map("count_end_of_con")
+  countOrdered    Int      @default(0) @map("count_ordered")
+  countReceived   Int      @default(0) @map("count_received")
+  notes           String?
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  equipmentType EquipmentType @relation(fields: [equipmentTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([equipmentTypeId, year])
+  @@index([year])
+  @@map("equipment_inventory")
+}
+
+// ============================================================
+// Audit log
+// ============================================================
+
+// Append-only record of destructive / sensitive admin actions (bulk deletes,
+// imports). Deliberately has NO foreign key to signs/users so it survives the
+// rows it records being deleted.
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  action     String
+  actorId    String?  @map("actor_id")
+  actorEmail String?  @map("actor_email")
+  detail     String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([action])
+  @@map("audit_log")
+}

@@ -1,0 +1,7 @@
+# These artifacts run on Linux (Docker build + host) — keep LF regardless of the
+# committer's platform. CRLF in a shebang script breaks with "bad interpreter: ...^M".
+*.sh           text eol=lf
+Dockerfile     text eol=lf
+.dockerignore  text eol=lf
+*.yml          text eol=lf
+*.yaml         text eol=lf
