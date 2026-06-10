@@ -43,9 +43,13 @@ credentials.json
 # IDE and tools
 .vscode/
 .idea/
-.claude/
 *.swp
 *.swo
+
+# AI agent tooling
+.claude/
+CLAUDE.md
+AGENTS.md
 
 # OS
 .DS_Store
