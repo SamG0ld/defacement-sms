@@ -3,8 +3,20 @@
 // (signSheet / master) live in ./_parsers and reuse these helpers.
 import { z } from "zod";
 
-import { signTypeFromSize } from "@/lib/print-summary";
+import { categoryFromSize, signTypeFromSize } from "@/lib/print-summary";
+import type { SignCategory } from "@/app/generated/prisma/enums";
 import { DEPLOYMENT_SLOTS } from "../_lib";
+
+// Item-class enum values, kept in sync with prisma SignCategory. Used by the import
+// row validator. (zod v4 z.enum takes a literal tuple; this is the single source.)
+const SIGN_CATEGORY_VALUES = [
+  "easel_sign",
+  "meterboard",
+  "socks",
+  "ops_map",
+  "union_installed",
+  "other",
+] as const satisfies readonly SignCategory[];
 
 // Canonical field -> accepted header aliases (compared lowercased + trimmed).
 // itemId and signText are the only truly required columns; everything else has
@@ -69,7 +81,7 @@ export function normalizeSlot(raw: string): string | null {
 export type MappingContext = {
   zoneByCode: Map<string, number>; // upper(zoneCode) -> id
   tagSlugs: Set<string>;
-  existingKeys: Set<string>; // `${itemId} ${signText}` already in DB
+  existingKeys: Set<string>; // `${itemId} ${signText} ${size}` already in DB
 };
 
 // The import allowlist: only these scalar fields can be written from any import
@@ -83,6 +95,8 @@ export type SignData = {
   quantity: number;
   doubleSided: boolean;
   needsEasel: boolean;
+  category: SignCategory;
+  printable: boolean;
   placementArea: string | null;
   notes: string | null;
   deploymentSlot: string | null;
@@ -114,6 +128,8 @@ export const rowSchema = z.object({
   quantity: z.number().int().min(1).max(999),
   doubleSided: z.boolean(),
   needsEasel: z.boolean(),
+  category: z.enum(SIGN_CATEGORY_VALUES),
+  printable: z.boolean(),
   placementArea: z.string().max(300).nullable(),
   notes: z.string().max(5000).nullable(),
   deploymentSlot: z.string().max(50).nullable(),
@@ -129,6 +145,9 @@ export type ImportPreview = {
   ignoredHeaders: string[]; // header cells that didn't map
   rows: MappedRow[];
   counts: { valid: number; invalid: number; duplicate: number; total: number };
+  // Non-fatal, sheet-level notices surfaced in the preview (e.g. a whole section
+  // intentionally skipped). Never silently drop — say what wasn't imported.
+  notices?: string[];
 };
 
 export const cell = (row: string[], idx: number | undefined): string =>
@@ -158,7 +177,7 @@ export function tooManyRows(rowCount: number): ImportPreview | null {
 export function categorizeRows(
   drafts: RowDraft[],
   ctx: MappingContext,
-  meta: { mappedColumns: string[]; ignoredHeaders: string[] },
+  meta: { mappedColumns: string[]; ignoredHeaders: string[]; notices?: string[] },
 ): ImportPreview {
   const seenInFile = new Set<string>();
   const out: MappedRow[] = [];
@@ -173,7 +192,11 @@ export function categorizeRows(
       });
       continue;
     }
-    const key = `${draft.data.itemId} ${draft.data.signText}`;
+    // Dedup on itemId + signText + size: the same room can legitimately get
+    // both a sock (room-label cover) and a meterboard, or a poster and a
+    // schedule — distinct physical signs that share a Map# and text but differ
+    // by size. Keying on size keeps them; a true re-import still dedupes.
+    const key = `${draft.data.itemId} ${draft.data.signText} ${draft.data.size}`;
     const isDup = ctx.existingKeys.has(key) || seenInFile.has(key);
     seenInFile.add(key);
     out.push({
@@ -194,6 +217,7 @@ export function categorizeRows(
       duplicate: out.filter((r) => r.status === "duplicate").length,
       total: out.length,
     },
+    notices: meta.notices,
   };
 }
 
@@ -298,6 +322,8 @@ export function buildPreview(
       quantity: clampQuantity(cell(row, map.quantity)),
       doubleSided: /double/i.test(sizeRaw),
       needsEasel: isTruthy(cell(row, map.needsEasel)),
+      category: categoryFromSize(sizeRaw),
+      printable: true,
       placementArea: cell(row, map.placementArea) || null,
       notes: cell(row, map.notes) || null,
       deploymentSlot: (() => {

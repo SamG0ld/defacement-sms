@@ -1,0 +1,14 @@
+Item ID,Sign Text,Type,Size,Qty,Double-Sided,Needs Easel,Status,Zone,Placement,Deploy Slot,Priority,Cost/Unit,Total Cost,Requestor,Tags,Notes
+M-001,DEF CON Registration,22x28,22x28,1,No,Yes,pending,LVCC-L1,Main Entrance,THU_AM,1,12.00,12.00,Ops,wayfinding,Hang high
+M-002,Aerospace Village,22x28,22x28,1,No,Yes,pending,LVCC-H1,Hall 1,THU_AM,2,12.00,12.00,Villages,village,
+M-003,Car Hacking Village,24x36,24x36,1,No,Yes,generated,LVCC-H2,Hall 2,THU_PM,2,18.00,18.00,Villages,village,
+M-004,Cryptocurrency Village,24x36,24x36,1,No,Yes,pending,LVCC-H2,Hall 2,FRI_AM,3,18.00,18.00,Villages,village,Longest name — forces shrink
+M-005,Welcome to DEF CON,Banner,Banner,1,Yes,No,pending,LVCC-L1,Concourse,WED_PM,1,45.00,45.00,Ops,priority;wayfinding,Double-sided banner
+M-006,Track 1,Meterboard,Meterboard (4x8),1,No,No,pending,LVCC-L2,Level 2,THU_AM,1,80.00,80.00,Talks,stage,
+M-007,Track 2,Meterboard,Meterboard (4x8),1,No,No,pending,LVCC-L2,Level 2,THU_AM,1,80.00,80.00,Talks,stage,
+M-008,Chill Out,Socks,Socks,2,No,No,pending,LVCC-L3,Level 3,FRI_PM,4,9.00,18.00,Ops,,Flying socks
+M-009,Vendor Area,8x20,8x20,1,No,No,pending,LVCC-H3,Hall 3,WED_AM,2,150.00,150.00,Vendors,,Big banner wall
+M-010,Movie Night,22x28,22x28,1,No,Yes,pending,LVCC-NH,North Hall,SAT_PM,3,12.00,12.00,Entertainment,,
+M-011,Biohacking Village,22x28,22x28,1,No,Yes,pending,LVCC-H1,Hall 1,THU_PM,2,12.00,12.00,Villages,village,
+M-012,Lost & Found,22x28,22x28,1,No,Yes,pending,LVCC-L1,Info Booth,WED_AM,1,12.00,12.00,Ops,,Ampersand chunk
+M-013,Quiet Room,Sticker,,1,No,No,pending,LVCC-L2,Level 2,FRI_AM,4,3.00,3.00,Ops,,No size — generic template

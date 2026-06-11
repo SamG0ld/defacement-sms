@@ -66,3 +66,7 @@ backups/
 
 # Generated Prisma client
 /app/generated/prisma
+
+# Real DEF CON source sheets (operational data — keep out of the public repo)
+fixtures/dc33-sign-sheet.csv
+fixtures/dc33-sheet6-history.csv

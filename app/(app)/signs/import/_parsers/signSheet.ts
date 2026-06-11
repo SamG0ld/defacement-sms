@@ -3,7 +3,12 @@
 // and rotating-event time windows in the Notes column. Closes the gaps the
 // generic parser drops (deploy matrix, blank Map#, section rows).
 import { CON_SLUG, CON_YEAR } from "@/lib/con-config";
-import { signTypeFromSize } from "@/lib/print-summary";
+import {
+  categoryFromSize,
+  sectionCategory,
+  signTypeFromSize,
+} from "@/lib/print-summary";
+import type { SignCategory } from "@/app/generated/prisma/enums";
 
 import {
   cell,
@@ -110,6 +115,13 @@ export function buildSignSheetPreview(
   let currentMaterialTag: string | null = null;
   let currentMaterial: string | null = null;
   let currentZoneCode: string | null = null;
+  let currentCategory: SignCategory | null = null;
+
+  // Once the specialty graphics sub-table starts (shifted columns: floor/wall
+  // graphics, venue maps, sticker walls), stop importing — those are entered via
+  // the sign form, not this sheet. Track how many rows we skipped so we can say so.
+  let inSpecialtySection = false;
+  let specialtySkipped = 0;
 
   const drafts: RowDraft[] = [];
 
@@ -117,6 +129,19 @@ export function buildSignSheetPreview(
     const line = headerIdx + 2 + i; // 1-based source line
     const signText = cell(row, map.signText);
     const labelCell = cell(row, map.itemId);
+
+    // Specialty graphics sub-table (and everything after): skip, entered via form.
+    if (inSpecialtySection) {
+      if (row.some((c) => (c ?? "").trim() !== "")) specialtySkipped++;
+      return;
+    }
+    if (/specialty section/i.test(signText) || /specialty section/i.test(labelCell)) {
+      inSpecialtySection = true;
+      return;
+    }
+    // Template rows whose Map# cell is exactly "example" (the sheet's banner
+    // placeholder) aren't real signs.
+    if (labelCell.toLowerCase() === "example") return;
 
     // Section / blank rows (no sign text): update state, then skip.
     if (!signText) {
@@ -127,6 +152,7 @@ export function buildSignSheetPreview(
       } else if (isMaterialLabel(labelCell)) {
         currentMaterial = labelCell;
         currentMaterialTag = materialTag(labelCell);
+        currentCategory = sectionCategory(labelCell); // item class for this block
         currentCategoryTag = null; // new block: drop the previous category/floor
         currentZoneCode = null;
       } else {
@@ -193,6 +219,10 @@ export function buildSignSheetPreview(
       quantity: clampQuantity(cell(row, map.quantity)),
       doubleSided: /double/i.test(sizeRaw),
       needsEasel: isTruthy(cell(row, map.needsEasel)),
+      // Section class wins (the sheet's own grouping is authoritative); size is the
+      // fallback. Bare-easel rows ("(easels only)") need easels but print nothing.
+      category: currentCategory ?? categoryFromSize(sizeRaw),
+      printable: !/easels?\s*only/i.test(signText),
       placementArea,
       notes,
       deploymentSlot,
@@ -205,6 +235,13 @@ export function buildSignSheetPreview(
     drafts.push({ line, data, tagSlugs, warnings });
   });
 
+  const notices: string[] = [];
+  if (specialtySkipped > 0) {
+    notices.push(
+      `Specialty section detected — ${specialtySkipped} row(s) below it were not imported (floor/wall graphics, venue maps, sticker walls). Add these via the sign form.`,
+    );
+  }
+
   return categorizeRows(drafts, ctx, {
     mappedColumns: [
       "itemId",
@@ -212,6 +249,7 @@ export function buildSignSheetPreview(
       "size",
       "quantity",
       "needsEasel",
+      "category",
       "placementArea",
       "notes",
       `deploy-matrix(${deployCols.length})`,
@@ -219,5 +257,6 @@ export function buildSignSheetPreview(
       "event-times",
     ],
     ignoredHeaders: [],
+    notices,
   });
 }

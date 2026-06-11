@@ -9,7 +9,7 @@ import { requireRole, requireSession } from "@/lib/rbac";
 import { Prisma } from "@/app/generated/prisma/client";
 import type { SignStatus } from "@/app/generated/prisma/client";
 
-import { SIGN_STATUSES, stampsForStatus } from "./_lib";
+import { SIGN_CATEGORIES, SIGN_STATUSES, stampsForStatus } from "./_lib";
 
 // Surface failures via ?error= on the originating page (same server-only pattern
 // as /users). redirect() throws, so these never return.
@@ -150,6 +150,8 @@ function readSignForm(formData: FormData) {
     quantity,
     doubleSided: formData.get("doubleSided") != null,
     needsEasel: formData.get("needsEasel") != null,
+    category: get("category"),
+    printable: formData.get("printable") != null,
     requestor: optStr("requestor"),
     requestorEmail: optStr("requestorEmail"),
     costPerUnit,
@@ -180,6 +182,8 @@ const signSchema = z.object({
   quantity: z.number().int().min(1).max(999),
   doubleSided: z.boolean(),
   needsEasel: z.boolean(),
+  category: z.enum(SIGN_CATEGORIES),
+  printable: z.boolean(),
   requestor: z.string().max(200).nullable(),
   requestorEmail: z
     .string()
@@ -211,6 +215,8 @@ function toSignData(d: z.infer<typeof signSchema>) {
     quantity: d.quantity,
     doubleSided: d.doubleSided,
     needsEasel: d.needsEasel,
+    category: d.category,
+    printable: d.printable,
     requestor: d.requestor,
     requestorEmail: d.requestorEmail,
     costPerUnit: d.costPerUnit,

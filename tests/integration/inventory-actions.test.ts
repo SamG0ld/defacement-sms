@@ -201,7 +201,8 @@ describe("recordSignMaterialHistory", () => {
     };
     expect((await rowFor("Signs 22x28"))?.countEndOfCon).toBe(2);
     expect((await rowFor("Signs 24x36"))?.countEndOfCon).toBe(1);
-    // Easels required is derived from the poster sizes: 22x28 (2) + 24x36 (1) = 3.
-    expect((await rowFor("Easels Required"))?.countEndOfCon).toBe(3);
+    // Easels required honors the Easel Y/N flag: only R2 is marked needsEasel
+    // (qty 1), so 1 — R1 is a poster but unmarked, so it does NOT add an easel.
+    expect((await rowFor("Easels Required"))?.countEndOfCon).toBe(1);
   });
 });

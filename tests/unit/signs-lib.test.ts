@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  SIGN_STATUSES,
+  buildSearchHref,
   buildSignWhere,
   deploymentSlotLabel,
   formatDate,
@@ -132,62 +134,112 @@ describe("Vegas-time formatting", () => {
 describe("stampsForStatus", () => {
   const now = new Date("2025-08-09T02:00:00.000Z");
 
-  it("clears both stamps when moving to a pre-delivery status", () => {
+  it("clears every step stamp when moving to a pre-delivery status", () => {
     for (const s of ["pending", "generated", "printed"] as const) {
       expect(stampsForStatus(s, "me", now)).toEqual({
         deliveredAt: null,
         deliveredBy: null,
         deployedAt: null,
         deployedBy: null,
+        handedOffAt: null,
+        handedOffBy: null,
+        installedAt: null,
+        installedBy: null,
       });
     }
   });
 
-  it("stamps delivered and clears the deploy stamp", () => {
+  it("stamps delivered and clears the downstream (deploy/handoff/install) stamps", () => {
     expect(stampsForStatus("delivered", "me", now)).toEqual({
       deliveredAt: now,
       deliveredBy: "me",
       deployedAt: null,
       deployedBy: null,
+      handedOffAt: null,
+      handedOffBy: null,
+      installedAt: null,
+      installedBy: null,
     });
   });
 
-  it("stamps deployed and leaves the delivery stamp untouched (not in the patch)", () => {
+  it("stamps deployed; delivered absent (preserved), external steps cleared", () => {
     const patch = stampsForStatus("deployed", "me", now);
-    expect(patch).toEqual({ deployedAt: now, deployedBy: "me" });
+    expect(patch).toEqual({
+      deployedAt: now,
+      deployedBy: "me",
+      handedOffAt: null,
+      handedOffBy: null,
+      installedAt: null,
+      installedBy: null,
+    });
     // deliveredAt/By are absent so each row keeps its own value under updateMany.
     expect("deliveredAt" in patch).toBe(false);
     expect("deliveredBy" in patch).toBe(false);
   });
 
-  it("moving to sorted preserves delivered (absent) and clears the deploy stamp", () => {
+  it("moving to sorted preserves delivered (absent) and clears the downstream stamps", () => {
     const patch = stampsForStatus("sorted", "me", now);
-    expect(patch).toEqual({ deployedAt: null, deployedBy: null });
+    expect(patch).toEqual({
+      deployedAt: null,
+      deployedBy: null,
+      handedOffAt: null,
+      handedOffBy: null,
+      installedAt: null,
+      installedBy: null,
+    });
     expect("deliveredAt" in patch).toBe(false); // a sorted sign was delivered
+  });
+
+  it("stamps handed_off, clears the sibling deploy stamp, delivered preserved", () => {
+    const patch = stampsForStatus("handed_off", "me", now);
+    expect(patch).toEqual({
+      handedOffAt: now,
+      handedOffBy: "me",
+      installedAt: null,
+      installedBy: null,
+      // deployed is the sibling terminal on the other fork — cleared so a sign is
+      // never both deployed and handed off.
+      deployedAt: null,
+      deployedBy: null,
+    });
+    // delivered ranks below handed_off but is shared upstream, so it's absent
+    // (preserved — a handed-off sign was delivered).
+    expect("deliveredAt" in patch).toBe(false);
+  });
+
+  it("stamps installed, clears the sibling deploy stamp, handed_off preserved", () => {
+    const patch = stampsForStatus("installed", "me", now);
+    expect(patch).toEqual({
+      installedAt: now,
+      installedBy: "me",
+      deployedAt: null,
+      deployedBy: null,
+    });
+    // delivered + handed_off rank below installed on the same fork → absent (kept).
+    expect("deliveredAt" in patch).toBe(false);
+    expect("handedOffAt" in patch).toBe(false);
   });
 });
 
 describe("hardware derivation", () => {
-  it("needsHardware: easel signs and meterboard-size signs", () => {
-    expect(needsHardware({ needsEasel: true, size: "22x28" })).toBe(true);
-    expect(needsHardware({ needsEasel: false, size: "Meterboard (4x8)" })).toBe(
-      true,
-    );
-    expect(needsHardware({ needsEasel: false, size: "4x8" })).toBe(true);
+  it("needsHardware: easel-flagged signs and the meterboard category", () => {
+    expect(needsHardware({ needsEasel: true, category: "easel_sign" })).toBe(true);
+    expect(needsHardware({ needsEasel: false, category: "meterboard" })).toBe(true);
   });
 
-  it("needsHardware: false for non-easel, non-meterboard (incl. a 4x8 banner)", () => {
-    expect(needsHardware({ needsEasel: false, size: "22x28" })).toBe(false);
-    // "4x8 banner" classifies as banner, not meterboard (bucket priority).
-    expect(needsHardware({ needsEasel: false, size: "4x8 banner" })).toBe(false);
+  it("needsHardware: false for non-easel, non-meterboard (incl. paper ops maps)", () => {
+    expect(needsHardware({ needsEasel: false, category: "easel_sign" })).toBe(false);
+    // A paper "4x8 (printed)" map is an ops_map — no meterboard stand.
+    expect(needsHardware({ needsEasel: false, category: "ops_map" })).toBe(false);
+    expect(needsHardware({ needsEasel: false, category: "union_installed" })).toBe(false);
   });
 
   it("hardwareKind: easel wins, else meterboard stand, else null", () => {
-    expect(hardwareKind({ needsEasel: true, size: "4x8" })).toBe("easel");
-    expect(hardwareKind({ needsEasel: false, size: "meterboard" })).toBe(
+    expect(hardwareKind({ needsEasel: true, category: "meterboard" })).toBe("easel");
+    expect(hardwareKind({ needsEasel: false, category: "meterboard" })).toBe(
       "meterboard stand",
     );
-    expect(hardwareKind({ needsEasel: false, size: "22x28" })).toBeNull();
+    expect(hardwareKind({ needsEasel: false, category: "easel_sign" })).toBeNull();
   });
 });
 
@@ -238,5 +290,57 @@ describe("statusBadgeClass", () => {
     expect(statusBadgeClass("delivered")).toBe("badge-delivered");
     expect(statusBadgeClass("sorted")).toBe("badge-sorted");
     expect(statusBadgeClass("deployed")).toBe("badge-deployed");
+    expect(statusBadgeClass("handed_off")).toBe("badge-handed_off");
+    expect(statusBadgeClass("installed")).toBe("badge-installed");
+  });
+});
+
+describe("SIGN_STATUSES", () => {
+  it("keeps the external-item steps appended after deployed (stable ranks)", () => {
+    // stampsForStatus + every status surface rank by index here, so the order
+    // is load-bearing: the original six must keep their positions and the two
+    // Phase-2 steps come last.
+    expect(SIGN_STATUSES).toEqual([
+      "pending",
+      "generated",
+      "printed",
+      "delivered",
+      "sorted",
+      "deployed",
+      "handed_off",
+      "installed",
+    ]);
+  });
+});
+
+describe("buildSearchHref", () => {
+  it("returns the bare pathname when there is no query and no filters", () => {
+    expect(buildSearchHref("/signs", "", "")).toBe("/signs");
+  });
+
+  it("sets a trimmed q when given a query", () => {
+    expect(buildSearchHref("/signs", "", "  beard  ")).toBe("/signs?q=beard");
+  });
+
+  it("preserves other active filters alongside the query", () => {
+    expect(buildSearchHref("/signs", "status=sorted&zone=2", "beard")).toBe(
+      "/signs?status=sorted&zone=2&q=beard",
+    );
+  });
+
+  it("keeps the other filters when the query is cleared", () => {
+    expect(buildSearchHref("/signs", "status=sorted", "")).toBe(
+      "/signs?status=sorted",
+    );
+  });
+
+  it("drops page so a new search resets to page 1", () => {
+    expect(buildSearchHref("/signs", "status=sorted&page=4", "beard")).toBe(
+      "/signs?status=sorted&q=beard",
+    );
+  });
+
+  it("treats a whitespace-only query as empty", () => {
+    expect(buildSearchHref("/signs", "", "   ")).toBe("/signs");
   });
 });

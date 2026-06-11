@@ -14,6 +14,7 @@ export const signRowSelect = {
   deploymentSlot: true,
   needsEasel: true,
   size: true,
+  category: true,
   equipmentCheckedOut: true,
   zone: { select: { zoneCode: true, zoneName: true, building: true } },
   tagAssignments: {

@@ -2,7 +2,7 @@
 // of every space (Name / Department / Level / Booth-Room#) after some metadata +
 // TOTALS rows. Generates one candidate sign per space for the user to curate.
 import { ROOM_ID_SIGN_SIZE } from "@/lib/con-config";
-import { signTypeFromSize } from "@/lib/print-summary";
+import { categoryFromSize, signTypeFromSize } from "@/lib/print-summary";
 
 import {
   cell,
@@ -116,6 +116,8 @@ export function buildMasterPreview(
       quantity: 1,
       doubleSided: false,
       needsEasel: false,
+      category: categoryFromSize(ROOM_ID_SIGN_SIZE), // standard room-ID poster -> easel_sign
+      printable: true,
       placementArea: placement,
       notes: dept ? `Department: ${dept}` : null,
       deploymentSlot: null,

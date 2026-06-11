@@ -71,7 +71,9 @@ body {
   .badge-printed,
   .badge-delivered,
   .badge-sorted,
-  .badge-deployed {
+  .badge-deployed,
+  .badge-handed_off,
+  .badge-installed {
     background: color-mix(in oklab, var(--badge) 16%, transparent);
     border-color: color-mix(in oklab, var(--badge) 45%, transparent);
     color: color-mix(in oklab, var(--badge) 65%, white);
@@ -93,5 +95,11 @@ body {
   }
   .badge-deployed {
     --badge: var(--status-deployed);
+  }
+  .badge-handed_off {
+    --badge: var(--status-handed_off);
+  }
+  .badge-installed {
+    --badge: var(--status-installed);
   }
 }

@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 
 import type { DeploySignView } from "@/lib/deploy/contract";
 import type { DeployStore } from "../_lib/store";
+import { filterSignsByQuery, normalizeQuery } from "../_lib/search";
 import { DeploySheet } from "./DeploySheet";
 
 type Buckets = {
@@ -78,8 +79,22 @@ export function SignList({
 }) {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [deployTarget, setDeployTarget] = useState<DeploySignView | null>(null);
+  const [query, setQuery] = useState("");
 
   const hasCrew = store.activeCrewId !== null;
+  const searching = normalizeQuery(query).length > 0;
+
+  // Client-side quick search over the already-loaded sign set — instant and
+  // offline-safe. Filters only the actionable lists; selection state below still
+  // tracks the full claimable bucket, so a selection survives a filter change.
+  const filteredMyClaims = useMemo(
+    () => filterSignsByQuery(buckets.myClaims, query),
+    [buckets.myClaims, query],
+  );
+  const filteredClaimable = useMemo(
+    () => filterSignsByQuery(buckets.claimable, query),
+    [buckets.claimable, query],
+  );
 
   // A sign can leave the claimable bucket between renders (another crew claimed
   // it, or it got deployed). Rather than mutate `selected` from an effect, derive
@@ -114,18 +129,47 @@ export function SignList({
 
   return (
     <div className="space-y-6 pb-24">
+      {/* Quick search — item ID or sign text, instant + offline */}
+      <div className="relative">
+        <input
+          type="text"
+          inputMode="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search item ID or text…"
+          aria-label="Search signs by item ID or text"
+          className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-accent focus:outline-none"
+        />
+        {searching && (
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            className="absolute inset-y-0 right-2 my-auto h-6 rounded px-2 text-xs text-zinc-400 hover:bg-zinc-800"
+            aria-label="Clear search"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
       {/* My crew's claimed, deployable signs */}
       <section className="space-y-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
-          My crew · ready to deploy ({buckets.myClaims.length})
+          My crew · ready to deploy (
+          {searching
+            ? `${filteredMyClaims.length} of ${buckets.myClaims.length}`
+            : buckets.myClaims.length}
+          )
         </h2>
         {buckets.myClaims.length === 0 ? (
           <p className="text-sm text-zinc-600">
             Nothing claimed yet — claim signs below.
           </p>
+        ) : filteredMyClaims.length === 0 ? (
+          <p className="text-sm text-zinc-600">No matches in your claims.</p>
         ) : (
           <ul className="space-y-2">
-            {buckets.myClaims.map((s) => (
+            {filteredMyClaims.map((s) => (
               <SignRow
                 key={s.id}
                 sign={s}
@@ -157,7 +201,11 @@ export function SignList({
       {/* Claimable (sorted + unclaimed) */}
       <section className="space-y-2">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
-          Claimable ({buckets.claimable.length})
+          Claimable (
+          {searching
+            ? `${filteredClaimable.length} of ${buckets.claimable.length}`
+            : buckets.claimable.length}
+          )
         </h2>
         {!hasCrew && (
           <p className="text-sm text-highlight">
@@ -166,9 +214,11 @@ export function SignList({
         )}
         {buckets.claimable.length === 0 ? (
           <p className="text-sm text-zinc-600">No unclaimed sorted signs.</p>
+        ) : filteredClaimable.length === 0 ? (
+          <p className="text-sm text-zinc-600">No matching claimable signs.</p>
         ) : (
           <ul className="space-y-2">
-            {buckets.claimable.map((s) => (
+            {filteredClaimable.map((s) => (
               <SignRow
                 key={s.id}
                 sign={s}

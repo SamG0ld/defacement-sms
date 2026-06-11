@@ -6,9 +6,10 @@ workflow with a database-backed web app.
 
 > **Status — active rewrite, core complete.** This is the Next.js rebuild of a production-tested
 > Flask app that ran the signage workflow through DC33. Authentication, the full data model, the
-> core domain UI (sign management, CSV import/export, inventory, admin/user management), and the
-> offline-first field-deployment PWA are all in place. What remains is the sign-art generation
-> pipeline and production deployment. See the [Roadmap](#roadmap).
+> core domain UI (sign management, CSV import/export, inventory, admin/user management), the
+> external-item delivery/handoff lifecycle, and the offline-first field-deployment PWA are all in
+> place. What remains is finishing the sign-art generation pipeline and production deployment. See
+> the [Roadmap](#roadmap).
 
 ## Tech stack
 
@@ -42,19 +43,31 @@ workflow with a database-backed web app.
   history, audit log) defined in Prisma with migrations applied.
 - **Dashboard** — at-a-glance status counts, a deployment-progress bar, and deploy-by-today /
   overdue tiles, each linking into the matching filtered list.
-- **Sign management** — list with filters (status / zone / tag / deploy slot / type / search) and
-  a pager, a detail view with a status-history timeline, lead-gated create/edit/delete, and a
-  six-stage status workflow (`pending → generated → printed → delivered → sorted → deployed`).
+- **Sign management** — list with filters (status / zone / tag / deploy slot / type / category /
+  search) and a pager, a detail view with a status-history timeline and sign-art previews,
+  lead-gated create/edit/delete, and a category-aware status workflow (deploy items run
+  `pending → generated → printed → delivered → sorted → deployed`).
   Change a sign's status from the list with a deliberate **click-then-confirm** to any stage, or use
   **bulk multi-select** — set status (any user) or zone / slot / tag / delete (lead+), acting on
-  the checked rows or every row matching the current filter. Easel and meterboard signs also track
+  the checked rows or every row matching the current filter. Single per-sign status changes are
+  **offline-resilient** — written to a durable IndexedDB queue that survives connectivity drops and
+  syncs in the background (idempotent on a client key). Easel and meterboard signs also track
   whether their **hardware has been collected**. Every change records status history and keeps
   delivery/deploy timestamps consistent. Desktop table (with per-column tooltips) + mobile cards.
+- **Sign categories & external-item lifecycle** — signs are categorized (easel posters, meterboards,
+  socks, ops maps, union-installed items), set automatically on CSV import and editable on the form.
+  Externally-installed items (banners, floor/wall graphics, sticker walls, ops maps) are produced
+  off-site, so their detail page walks a **delivery & handoff** chain of custody: accept delivery →
+  hand off to a named crew → confirm installed (`delivered → handed_off → installed`), each step
+  recording who/when with an optional proof photo stored privately and served through an auth-gated
+  route.
 - **CSV import / export** — a source-aware import wizard (DEF CON sign sheet, Master inventory, or
   generic CSV) with a non-destructive dry-run preview that flags valid / invalid / duplicate rows;
-  filtered export that round-trips with import; formula-injection-safe output and size/row caps.
-- **Inventory** — equipment types with per-year counts and a year-over-year matrix, plus a print
-  summary derived live from the sign list (counts by size, easels/meterboard stands required).
+  sign categories assigned automatically from the sheet's section structure; filtered export that
+  round-trips with import; formula-injection-safe output and size/row caps.
+- **Inventory** — equipment types with per-year counts and a year-over-year matrix, plus a
+  category-aware print summary derived live from the sign list (counts per category and size,
+  honoring per-sign easel flags and counting meterboard stands only for meterboard items).
 - **Field-deployment PWA** (`/deploy`) — an offline-first, installable web app where crews claim
   batches of `sorted` signs (exclusive lock) and mark them deployed with an optional photo, working
   with no network on a hostile-RF floor and syncing on reconnect (durable IndexedDB outbox over the

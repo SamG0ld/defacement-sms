@@ -1,5 +1,6 @@
 import { setHardwareCollected } from "../actions";
 import { hardwareKind, needsHardware } from "../_lib";
+import type { SignCategory } from "@/app/generated/prisma/enums";
 
 // Per-row hardware-collected toggle. Renders only for signs that need hardware
 // (easel / meterboard); a server-action form with one submit button (binary +
@@ -10,7 +11,7 @@ export function HardwareToggle({
   sign: {
     id: number;
     needsEasel: boolean;
-    size: string;
+    category: SignCategory;
     equipmentCheckedOut: boolean;
   };
 }) {

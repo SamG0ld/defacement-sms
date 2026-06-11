@@ -14,7 +14,7 @@ export async function WhereItGoes({
   sign,
   canManage,
 }: {
-  sign: SignPinInput & { id: number };
+  sign: SignPinInput & { id: number; deployPhotoUrl?: string | null };
   canManage: boolean;
 }) {
   const [floors, floorMaps] = await Promise.all([
@@ -69,7 +69,18 @@ export async function WhereItGoes({
           <FloorPinView
             src={viewFm.src}
             label={viewFm.label}
-            pins={[{ key: sign.id, xPct: resolved.xPct, yPct: resolved.yPct, active: true, title: "This sign" }]}
+            pins={[
+              {
+                key: sign.id,
+                xPct: resolved.xPct,
+                yPct: resolved.yPct,
+                active: true,
+                title: "This sign",
+                // Deployed signs (deployPhotoUrl set) get a tappable pin that
+                // opens the placed-sign photo; otherwise a plain marker.
+                photoSignId: sign.deployPhotoUrl ? sign.id : undefined,
+              },
+            ]}
           />
         ) : (
           <p className="text-sm text-zinc-500">

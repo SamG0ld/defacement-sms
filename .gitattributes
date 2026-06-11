@@ -5,3 +5,12 @@ Dockerfile     text eol=lf
 .dockerignore  text eol=lf
 *.yml          text eol=lf
 *.yaml         text eol=lf
+
+# Binary artifacts — never apply CRLF/text conversion (it corrupts them).
+*.pdf          binary
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.webp         binary
+*.webm         binary
+*.ico          binary

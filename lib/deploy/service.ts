@@ -3,11 +3,16 @@
 // them directly with a fabricated actor (no HTTP). Pure classification lives in
 // lib/deploy/resolve.ts; the wire shapes are in lib/deploy/contract.ts.
 
-import type { SignStatus } from "@/app/generated/prisma/client";
+import { Prisma, type SignStatus } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
 import { stampsForStatus } from "@/app/(app)/signs/_lib";
-import { buildClaimResponse, classifyDeploys } from "@/lib/deploy/resolve";
+import {
+  buildClaimResponse,
+  classifyDeploys,
+  classifySetStatus,
+} from "@/lib/deploy/resolve";
+import { signDeployPhotoSrc } from "@/lib/deploy/photo";
 import type {
   BootstrapResponse,
   ChangesResponse,
@@ -20,6 +25,8 @@ import type {
   DeploySignView,
   ReleaseRequest,
   ReleaseResponse,
+  SetSignStatusInput,
+  SetSignStatusResponse,
 } from "@/lib/deploy/contract";
 import { ApiError, type ApiActor } from "@/lib/deploy/api-types";
 
@@ -70,7 +77,7 @@ function toSignView(s: SignViewRow): DeploySignView {
     // Never expose the raw Blob reference. Clients get an auth-gated serving URL
     // that streams the private blob through our own route (see
     // app/api/native/photos/sign/[signId]).
-    deployPhotoUrl: s.deployPhotoUrl ? `/api/native/photos/sign/${s.id}` : null,
+    deployPhotoUrl: s.deployPhotoUrl ? signDeployPhotoSrc(s.id) : null,
     updatedAt: s.updatedAt.toISOString(),
   };
 }
@@ -366,6 +373,99 @@ export async function applyDeploys(
     });
   }
   return { results: finalResults };
+}
+
+// ── Sign status (single offline-queued change) ────────────────────────────────
+
+// Apply ONE per-sign status change, idempotent on clientId — the queued
+// counterpart to the online updateSignStatus Server Action. Mirrors the
+// applyDeploys discipline: reads outside the transaction, then a guarded write
+// whose unique clientId makes an at-least-once replay exactly-once. Last writer
+// wins for DIFFERENT clientIds touching the same sign (status is IDOR-by-design;
+// StatusHistory keeps the audited trail) — there is no status guard.
+export async function setSignStatus(
+  req: SetSignStatusInput,
+  actor: ApiActor,
+): Promise<SetSignStatusResponse> {
+  const changedBy = changedByOf(actor);
+
+  // Reads outside the transaction; the unique clientId + the P2002 catch inside
+  // the write make the classify→write safe under a concurrent identical replay.
+  const [existing, sign] = await Promise.all([
+    prisma.statusHistory.findUnique({
+      where: { clientId: req.clientId },
+      select: { id: true },
+    }),
+    prisma.sign.findUnique({
+      where: { id: req.signId },
+      select: { status: true },
+    }),
+  ]);
+
+  const result = classifySetStatus({
+    alreadyProcessed: existing !== null,
+    currentStatus: sign?.status,
+    targetStatus: req.status,
+  });
+
+  // duplicate / not_found / noop all write nothing — there's no ledger row to
+  // add (a no-op has nothing to replay; a duplicate already has its row).
+  if (result !== "applied") {
+    return { signId: req.signId, status: req.status, result };
+  }
+
+  // `sign` is non-null here: classify only returns "applied" when the sign
+  // exists and its status differs from the target.
+  // Known last-writer-wins limitation (matches applyDeploys' pre-tx read): the
+  // status read happened outside the transaction, so if a concurrent writer
+  // changes the sign between the read and the write below, this update silently
+  // overwrites it and the history row records the `oldStatus` THIS thread read,
+  // which may be stale. That's inherent to the no-locking IDOR-by-design model;
+  // the audited trail still captures every change, just possibly with a stale
+  // from-status in the rare race window.
+  const oldStatus = sign!.status;
+  const stamps = stampsForStatus(req.status, changedBy, req.changedAt);
+
+  try {
+    await prisma.$transaction([
+      prisma.sign.update({
+        where: { id: req.signId },
+        data: { status: req.status, ...stamps },
+      }),
+      prisma.statusHistory.create({
+        data: {
+          signId: req.signId,
+          clientId: req.clientId,
+          oldStatus,
+          newStatus: req.status,
+          changedBy,
+          changedAt: req.changedAt,
+          notes: req.notes ?? null,
+        },
+      }),
+    ]);
+  } catch (err) {
+    // A concurrent replay of the SAME clientId won the race and already wrote the
+    // history row (unique violation) — the whole transaction (incl. the sign
+    // update) rolled back, so reporting `duplicate` is honest idempotency.
+    if (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === "P2002"
+    ) {
+      return { signId: req.signId, status: req.status, result: "duplicate" };
+    }
+    throw err;
+  }
+
+  // Best-effort audit (recordAudit swallows its own failures).
+  await recordAudit({
+    action: "sign.status",
+    actorId: actor.userId,
+    actorEmail: actor.email,
+    detail: `sign #${req.signId} ${oldStatus} → ${req.status}`,
+  });
+
+  return { signId: req.signId, status: req.status, result: "applied" };
 }
 
 // Patch the deploy photo (a private Blob pathname, stored server-side only) onto

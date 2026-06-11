@@ -1,4 +1,11 @@
-import { DEPLOYMENT_SLOTS, SIGN_TYPES, shortZoneLabel } from "../_lib";
+import {
+  DEPLOYMENT_SLOTS,
+  SIGN_CATEGORIES,
+  SIGN_CATEGORY_LABELS,
+  SIGN_TYPES,
+  shortZoneLabel,
+} from "../_lib";
+import type { SignCategory } from "@/app/generated/prisma/enums";
 
 // Shapes kept minimal so both new/ and [id]/edit/ can pass plain query results.
 type ZoneOption = {
@@ -17,6 +24,8 @@ type SignDefaults = {
   quantity: number;
   doubleSided: boolean;
   needsEasel: boolean;
+  category: SignCategory;
+  printable: boolean;
   requestor: string | null;
   requestorEmail: string | null;
   costPerUnit: { toString(): string } | null;
@@ -79,6 +88,23 @@ export function SignForm({
               ))}
             </datalist>
           </label>
+          <label className={labelClass}>
+            Category *
+            {/* Form default is easel_sign (the most common class — saves a click),
+                intentionally distinct from the DB `other` sentinel (which flags
+                unclassified import/backfill rows that need attention). */}
+            <select
+              name="category"
+              defaultValue={sign?.category ?? "easel_sign"}
+              className={inputClass}
+            >
+              {SIGN_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {SIGN_CATEGORY_LABELS[c]}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className={`${labelClass} md:col-span-2`}>
             Sign text *
             <input
@@ -125,6 +151,15 @@ export function SignForm({
               className="h-4 w-4"
             />
             Needs easel
+          </label>
+          <label className="flex items-center gap-2 text-sm text-zinc-300">
+            <input
+              type="checkbox"
+              name="printable"
+              defaultChecked={sign?.printable ?? true}
+              className="h-4 w-4"
+            />
+            Printable (uncheck for bare easels — counted as easels, not prints)
           </label>
         </div>
       </fieldset>

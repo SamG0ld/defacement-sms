@@ -6,14 +6,15 @@ import { prisma } from "@/lib/db";
 import { hasRole } from "@/lib/rbac";
 
 import { WhereItGoes } from "../../map/_components/WhereItGoes";
+import { LifecyclePanel } from "../_components/LifecyclePanel";
 
+import { DeployPhotoThumb } from "../_components/DeployPhoto";
+import { StatusForm } from "./_StatusForm";
+import { DetailStatusBadge } from "./_StatusBadge";
+import { PreviewImage } from "./_components/PreviewImage";
+import { PreviewUpload } from "./_components/PreviewUpload";
+import { deleteSign, setHardwareCollected } from "../actions";
 import {
-  deleteSign,
-  setHardwareCollected,
-  updateSignStatus,
-} from "../actions";
-import {
-  SIGN_STATUSES,
   deploymentSlotLabel,
   formatDate,
   formatDateOnly,
@@ -22,7 +23,6 @@ import {
   needsHardware,
   safeColor,
   shortZoneLabel,
-  statusBadgeClass,
 } from "../_lib";
 
 type Params = Promise<{ id: string }>;
@@ -89,12 +89,10 @@ export default async function SignDetailPage({
       location: { include: { zone: true, floorMap: { select: { key: true } } } },
       tagAssignments: { include: { tag: true } },
       statusHistory: { orderBy: { changedAt: "desc" } },
+      generationBatch: { select: { id: true, label: true } },
     },
   });
   if (!sign) notFound();
-
-  // Any status other than the current one can be set directly (jump-to-any).
-  const next = SIGN_STATUSES.filter((s) => s !== sign.status);
 
   return (
     <div className="space-y-6">
@@ -112,11 +110,7 @@ export default async function SignDetailPage({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <span
-            className={`rounded border px-2.5 py-1 text-xs uppercase ${statusBadgeClass(sign.status)}`}
-          >
-            {sign.status}
-          </span>
+          <DetailStatusBadge signId={sign.id} status={sign.status} />
           {canManage && (
             <>
               <Link
@@ -144,52 +138,50 @@ export default async function SignDetailPage({
         </div>
       )}
 
-      {/* Status update control */}
+      {/* Status update control — durable queue island (M11 #2). */}
       <section className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4">
         <h2 className="text-sm font-semibold text-zinc-300">Update status</h2>
-        {next.length === 0 ? (
-          <p className="text-xs text-zinc-500">No further transitions.</p>
-        ) : (
-          <form
-            action={updateSignStatus.bind(null, sign.id)}
-            className="flex flex-wrap items-end gap-3"
-          >
-            <label className="flex flex-col gap-1 text-xs text-zinc-400">
-              New status
-              <select
-                name="status"
-                defaultValue=""
-                required
-                className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
-              >
-                <option value="" disabled>
-                  choose…
-                </option>
-                {next.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-1 flex-col gap-1 text-xs text-zinc-400">
-              Note (optional)
-              <input
-                type="text"
-                name="notes"
-                placeholder="e.g. handed off to deploy team"
-                className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600"
-              />
-            </label>
-            <button
-              type="submit"
-              className="btn-primary rounded px-3 py-1.5 text-sm font-medium"
+        <StatusForm signId={sign.id} status={sign.status} />
+      </section>
+
+      {/* Art preview — the generated sign image (web preview, not the print file) */}
+      <section className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-zinc-300">Art preview</h2>
+          {sign.generationBatch && (
+            <Link
+              href={`/signs/generate/${sign.generationBatch.id}`}
+              className="text-xs text-accent hover:opacity-80"
             >
-              Update
-            </button>
-          </form>
+              {sign.generationBatch.label ??
+                `Batch #${sign.generationBatch.id}`}{" "}
+              ↗
+            </Link>
+          )}
+        </div>
+        {sign.previewImagePath ? (
+          <PreviewImage
+            signId={sign.id}
+            alt={`Art preview for ${sign.signText}`}
+            cacheBust={sign.updatedAt.getTime()}
+          />
+        ) : (
+          <p className="text-sm text-zinc-500">
+            No preview yet.
+            {canManage
+              ? " Upload the PNG you exported from Figma."
+              : ""}
+          </p>
+        )}
+        {canManage && (
+          <PreviewUpload
+            signId={sign.id}
+            hasPreview={Boolean(sign.previewImagePath)}
+          />
         )}
       </section>
+
+      <LifecyclePanel sign={sign} />
 
       <WhereItGoes sign={sign} canManage={canManage} />
 
@@ -233,6 +225,13 @@ export default async function SignDetailPage({
           <Field label="Deployed at">{formatDateTime(sign.deployedAt)}</Field>
           <Field label="Deployment notes">
             {sign.deploymentNotes ?? "—"}
+          </Field>
+          <Field label="Photo">
+            {sign.deployPhotoUrl ? (
+              <DeployPhotoThumb signId={sign.id} />
+            ) : (
+              "—"
+            )}
           </Field>
           {needsHardware(sign) && (
             <Field label={`Hardware (${hardwareKind(sign)})`}>

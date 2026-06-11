@@ -6,12 +6,15 @@ import { hasRole } from "@/lib/rbac";
 
 import {
   DEPLOYMENT_SLOTS,
+  SIGN_CATEGORIES,
+  SIGN_CATEGORY_LABELS,
   SIGN_STATUSES,
   buildSignWhere,
   shortZoneLabel,
 } from "./_lib";
 import { BulkBar, SelectionProvider } from "./_selection";
 import { PagerLink } from "./_components/PagerLink";
+import { SearchField } from "./_components/SearchField";
 import { SignCards } from "./_components/SignCards";
 import { SignsTable } from "./_components/SignsTable";
 import { signRowSelect } from "./_components/types";
@@ -24,6 +27,7 @@ type SearchParams = Promise<{
   tag?: string;
   slot?: string;
   type?: string;
+  category?: string;
   q?: string;
   due?: string;
   page?: string;
@@ -42,6 +46,7 @@ function filterQuery(f: {
   tag: string;
   slot: string;
   type: string;
+  category: string;
   q: string;
   due: string;
 }): string {
@@ -51,6 +56,7 @@ function filterQuery(f: {
   if (f.tag) p.set("tag", f.tag);
   if (f.slot) p.set("slot", f.slot);
   if (f.type) p.set("type", f.type);
+  if (f.category) p.set("category", f.category);
   if (f.q) p.set("q", f.q);
   if (f.due) p.set("due", f.due);
   return p.toString();
@@ -74,6 +80,7 @@ export default async function SignsPage({
     tag: firstStr(sp.tag),
     slot: firstStr(sp.slot),
     type: firstStr(sp.type),
+    category: firstStr(sp.category),
     q: firstStr(sp.q),
     due: firstStr(sp.due),
   };
@@ -111,6 +118,10 @@ export default async function SignsPage({
   const signTypes = typeRows.map((r) => r.signType).filter(Boolean);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const baseQuery = filterQuery(f);
+  // Other active filters minus the search term — drives the live SearchField so a
+  // search preserves status/zone/tag/etc. (filterQuery never emits `page`, and
+  // buildSearchHref also drops it, so a new search lands on page 1).
+  const searchOtherParams = filterQuery({ ...f, q: "" });
 
   // Props for the selection island / bulk bar. returnTo keeps the user on this
   // exact filtered + paged view after a bulk action revalidates.
@@ -149,6 +160,12 @@ export default async function SignsPage({
           {canManage && (
             <>
               <Link
+                href="/signs/generate"
+                className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+              >
+                Generation
+              </Link>
+              <Link
                 href="/signs/import"
                 className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
               >
@@ -171,8 +188,9 @@ export default async function SignsPage({
         </div>
       )}
 
-      {/* GET filter form — submitting reloads the page with updated params, no
-          client JS. */}
+      {/* GET filter form — the selects submit via "Apply filters" (reloads with
+          updated params). The Search field is live (debounced soft-nav) but keeps
+          name="q" so it still degrades to a normal form submit without JS. */}
       <form
         method="get"
         className="grid grid-cols-2 gap-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4 md:grid-cols-3 lg:grid-cols-6"
@@ -253,14 +271,23 @@ export default async function SignsPage({
           </select>
         </label>
         <label className="flex flex-col gap-1 text-xs text-zinc-400">
+          Category
+          <select
+            name="category"
+            defaultValue={f.category}
+            className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
+          >
+            <option value="">All</option>
+            {SIGN_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {SIGN_CATEGORY_LABELS[c]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs text-zinc-400">
           Search
-          <input
-            type="text"
-            name="q"
-            defaultValue={f.q}
-            placeholder="text / item / area"
-            className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600"
-          />
+          <SearchField defaultValue={f.q} otherParams={searchOtherParams} />
         </label>
         <div className="col-span-2 flex items-center gap-2 md:col-span-3 lg:col-span-6">
           <button

@@ -27,6 +27,7 @@ import {
   bulkSetStatus,
   bulkSetZone,
 } from "./bulk-actions";
+import { generateSelection } from "./generate-actions";
 
 type SelectionContextValue = {
   selected: Set<number>;
@@ -255,6 +256,19 @@ export function BulkBar({
 
         {canManage && (
           <>
+            {/* Generate — create a tracked batch from the selection (marks the
+                signs generated + hands off the render-ready list to Figma) */}
+            <form action={generateSelection}>
+              {inputs}
+              <button
+                type="submit"
+                className={ACTION_BTN}
+                title="Create a generation batch from the selection (marks them generated)"
+              >
+                Generate
+              </button>
+            </form>
+
             {/* Zone */}
             <form action={bulkSetZone} className="flex items-center gap-1">
               {inputs}

@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  categoryFromSize,
   computePrintSummary,
   isMeterboard,
+  sectionCategory,
   signTypeFromSize,
   type SizeGroup,
 } from "@/lib/print-summary";
@@ -37,41 +39,71 @@ describe("signTypeFromSize", () => {
   });
 });
 
+describe("categoryFromSize", () => {
+  it("maps sizes to item classes (printed paper + 8x20 win over 4x8)", () => {
+    expect(categoryFromSize('22"x28"')).toBe("easel_sign");
+    expect(categoryFromSize("24x36")).toBe("easel_sign");
+    expect(categoryFromSize("4'x8' Double")).toBe("meterboard");
+    expect(categoryFromSize("Socks")).toBe("socks");
+    expect(categoryFromSize("8'x20'")).toBe("union_installed");
+    // A paper "4'x8' (printed)" command map is an ops map, NOT a meterboard.
+    expect(categoryFromSize("4' x 8' (printed)")).toBe("ops_map");
+    expect(categoryFromSize("nonsense")).toBe("other");
+  });
+});
+
+describe("sectionCategory", () => {
+  it("maps sheet section headers to classes (null when not a class section)", () => {
+    expect(sectionCategory("Command Maps (printed on paper, not meterboard)")).toBe("ops_map");
+    expect(sectionCategory('22" x 28"')).toBe("easel_sign");
+    expect(sectionCategory("21\" x 42\" Flying Signs (Socks)")).toBe("socks");
+    expect(sectionCategory("8' x 4' Foamcore Banners")).toBe("union_installed");
+    expect(sectionCategory("4' x 8' Meter Boards (Double Sided)")).toBe("meterboard");
+    expect(sectionCategory("Villages / Communities")).toBeNull();
+  });
+});
+
+// One group per (category, size, doubleSided, needsEasel, printable) — the inventory
+// page's groupBy shape. Exercises the three rules: easels honor the flag, stands are
+// category-based, prints exclude non-printable bare easels.
 const groups: SizeGroup[] = [
-  { size: '22" x 28"', doubleSided: false, quantity: 10 },
-  { size: '22" x 28"', doubleSided: true, quantity: 4 },
-  { size: '24" x 36"', doubleSided: false, quantity: 6 },
-  { size: "4' x 8' Meter Board", doubleSided: true, quantity: 8 },
-  { size: "8'x20' Banner", doubleSided: false, quantity: 2 },
-  { size: "21x42 socks", doubleSided: false, quantity: 3 },
+  { category: "easel_sign", size: '22" x 28"', doubleSided: false, needsEasel: true, printable: true, quantity: 10 },
+  { category: "easel_sign", size: '22" x 28"', doubleSided: true, needsEasel: false, printable: true, quantity: 4 },
+  { category: "easel_sign", size: '24" x 36"', doubleSided: false, needsEasel: true, printable: true, quantity: 6 },
+  { category: "meterboard", size: "4' x 8' Double", doubleSided: true, needsEasel: false, printable: true, quantity: 8 },
+  { category: "union_installed", size: "8'x20'", doubleSided: false, needsEasel: false, printable: true, quantity: 2 },
+  { category: "socks", size: "Socks", doubleSided: false, needsEasel: false, printable: true, quantity: 3 },
+  { category: "ops_map", size: "4' x 8' (printed)", doubleSided: false, needsEasel: false, printable: true, quantity: 5 },
+  // Bare easels: need an easel, print nothing.
+  { category: "easel_sign", size: '22" x 28"', doubleSided: false, needsEasel: true, printable: false, quantity: 7 },
 ];
 
 describe("computePrintSummary", () => {
   const summary = computePrintSummary(groups);
 
-  it("sums totals and derives easels from 22x28 + 24x36 counts", () => {
-    expect(summary.totalSigns).toBe(33);
-    // 22x28 total 14 + 24x36 total 6 = 20 easels needed.
-    expect(summary.easelsRequired).toBe(20);
+  it("totalSigns counts printable rows only (bare easels excluded)", () => {
+    expect(summary.totalSigns).toBe(38); // 10+4+6+8+2+3+5, not the 7 bare easels
   });
 
-  it("counts meterboard stands from meterboard signs", () => {
+  it("easelsRequired honors the Easel Y/N flag, incl. bare easels", () => {
+    expect(summary.easelsRequired).toBe(23); // 10 + 6 + 7 bare
+  });
+
+  it("meterboard stands come from the meterboard category, not 4x8 sizes", () => {
+    // Only the real meterboard (8) — the ops_map "4'x8' (printed)" does NOT add a stand.
     expect(summary.meterboardStands).toBe(8);
   });
 
-  it("buckets by material with single/double split", () => {
+  it("buckets by material; paper ops maps + banners get their own lines", () => {
     const byKey = Object.fromEntries(summary.materials.map((m) => [m.key, m]));
     expect(byKey["22x28"]).toMatchObject({ single: 10, double: 4, total: 14 });
     expect(byKey["24x36"]).toMatchObject({ total: 6 });
     expect(byKey["meterboard"]).toMatchObject({ single: 0, double: 8, total: 8 });
     expect(byKey["banner"]).toMatchObject({ total: 2 });
     expect(byKey["socks"]).toMatchObject({ total: 3 });
-  });
-
-  it("classifies a banner before meterboard (order is load-bearing)", () => {
-    // "8'x20' Banner" must not fall into the meterboard 4x8 bucket.
-    const byKey = Object.fromEntries(summary.materials.map((m) => [m.key, m]));
-    expect(byKey["banner"]).toBeDefined();
+    expect(byKey["ops-map"]).toMatchObject({ total: 5 });
+    // The paper map landed in ops-map, NOT meterboard.
+    expect(byKey["meterboard"].total).toBe(8);
   });
 
   it("sorts materials by total descending", () => {

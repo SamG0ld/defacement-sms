@@ -83,6 +83,8 @@ describe("categorizeRows", () => {
     quantity: 1,
     doubleSided: false,
     needsEasel: false,
+    category: "easel_sign",
+    printable: true,
     placementArea: null,
     notes: null,
     deploymentSlot: null,
@@ -102,7 +104,7 @@ describe("categorizeRows", () => {
       draft({ ...base, itemId: "B", signText: "Sign B" }, 3), // dup vs DB
       draft(base, 4), // dup of row 1 within the file
     ];
-    const ctx = makeCtx({ existingKeys: ["B Sign B"] });
+    const ctx = makeCtx({ existingKeys: ["B Sign B 22x28"] });
     const preview = categorizeRows(drafts, ctx, {
       mappedColumns: [],
       ignoredHeaders: [],
@@ -118,6 +120,28 @@ describe("categorizeRows", () => {
     expect(preview.rows[1].reason).toMatch(/sign text/i);
     expect(preview.rows[2].status).toBe("duplicate");
     expect(preview.rows[3].status).toBe("duplicate");
+  });
+
+  it("dedup key includes size: same room+text, different size both survive", () => {
+    const drafts: RowDraft[] = [
+      draft({ ...base, itemId: "W203", signText: "Press", size: "22x28" }, 1),
+      draft({ ...base, itemId: "W203", signText: "Press", size: "Socks", category: "socks" }, 2),
+    ];
+    const preview = categorizeRows(drafts, makeCtx(), {
+      mappedColumns: [],
+      ignoredHeaders: [],
+    });
+    expect(preview.counts.valid).toBe(2);
+    expect(preview.counts.duplicate).toBe(0);
+  });
+
+  it("surfaces section-level notices when provided", () => {
+    const preview = categorizeRows([draft(base, 1)], makeCtx(), {
+      mappedColumns: [],
+      ignoredHeaders: [],
+      notices: ["heads up"],
+    });
+    expect(preview.notices).toEqual(["heads up"]);
   });
 });
 

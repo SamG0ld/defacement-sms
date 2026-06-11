@@ -223,13 +223,16 @@ export async function recordSignMaterialHistory(year: number): Promise<void> {
   }
 
   const sizeGroups = await prisma.sign.groupBy({
-    by: ["size", "doubleSided"],
+    by: ["category", "size", "doubleSided", "needsEasel", "printable"],
     _sum: { quantity: true },
   });
   const summary = computePrintSummary(
     sizeGroups.map((g) => ({
+      category: g.category,
       size: g.size,
       doubleSided: g.doubleSided,
+      needsEasel: g.needsEasel,
+      printable: g.printable,
       quantity: g._sum.quantity ?? 0,
     })),
   );

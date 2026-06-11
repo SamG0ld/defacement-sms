@@ -52,6 +52,8 @@ production — that's local test data.
    - `BLOB_READ_WRITE_TOKEN` (from step 4b) — deploy-photo storage; **required in production**
    - `BOOTSTRAP_ADMIN_EMAILS` — comma-separated admin emails
    - `CSP_MODE=report` for the first deploy (flip to `enforce` in step 7)
+   - `FIGMA_API_TOKEN` — *optional*; only needed for "Pull previews from Figma" on a generation
+     batch. The feature reports itself as not configured when unset; nothing else depends on it.
    - `NEXTAUTH_URL` is set by Vercel automatically; override only for a custom domain.
 3. Deploy.
 

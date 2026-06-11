@@ -104,6 +104,29 @@ enum SignStatus {
   delivered
   sorted // staged by destination after delivery, before deploy
   deployed
+  // External-item lifecycle (Phase 2): union_installed / ops_map signs are produced
+  // off-site and installed by external actors, so after `delivered` (we accept the
+  // print-shop delivery) they go handed_off (out to a union crew / ops team) →
+  // installed (we confirm it went up), instead of our own sorted → deployed flow.
+  // Appended last because Postgres ALTER TYPE ADD VALUE appends; SIGN_STATUSES
+  // (signs/_lib.ts) — never the enum's internal order — drives display + ranking.
+  handed_off
+  installed
+}
+
+// Physical item class. Distinct classes have distinct counting + hardware rules:
+// easel_sign/meterboard need easels/stands and are deployed by us; socks need no
+// hardware; ops_map (paper orientation maps) are handed to ops teams; union_installed
+// (banners, floor/wall graphics, sticker walls) are hung by external union crews.
+// `other` is the unclassified fallback. Set at import from the sheet's section
+// structure (lib/print-summary sectionCategory/categoryFromSize), editable on the form.
+enum SignCategory {
+  easel_sign
+  meterboard
+  socks
+  ops_map
+  union_installed
+  other
 }
 
 model Zone {
@@ -213,6 +236,30 @@ model SignTemplate {
   @@map("sign_templates")
 }
 
+// A generation batch: one "Generate" action over a selection of signs. The app
+// is the system-of-record for the generation lifecycle — it doesn't render the
+// art (that's the Figma/Python step), it records who generated which signs when,
+// which pipeline, and the resulting editable Figma file URL. `signCount` is a
+// snapshot at creation time; the live set is the `signs` back-relation.
+// Actor is a free string (createdById/Email) like StatusHistory.changedBy /
+// AuditLog — no FK to User, so a user hard-delete can't orphan a batch.
+model GenerationBatch {
+  id             Int      @id @default(autoincrement())
+  label          String?
+  pipeline       String   @default("figma-mcp")
+  figmaUrl       String?  @map("figma_url")
+  signCount      Int      @map("sign_count")
+  createdById    String   @map("created_by_id")
+  createdByEmail String?  @map("created_by_email")
+  notes          String?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  signs Sign[]
+
+  @@index([createdAt])
+  @@map("generation_batches")
+}
+
 model Sign {
   id       Int    @id @default(autoincrement())
   itemId   String @map("item_id")
@@ -226,9 +273,15 @@ model Sign {
 
   // Specifications
   size        String
-  quantity    Int     @default(1)
-  doubleSided Boolean @default(false) @map("double_sided")
-  needsEasel  Boolean @default(false) @map("needs_easel")
+  quantity    Int          @default(1)
+  doubleSided Boolean      @default(false) @map("double_sided")
+  needsEasel  Boolean      @default(false) @map("needs_easel")
+  // Item class (drives per-category counts + hardware need). Defaults to `other`
+  // (an explicit "needs classifying" signal, not a silent guess); import + form set it.
+  category    SignCategory @default(other)
+  // Whether this row is physically printed. False for bare-easel rows ("(easels
+  // only)") that need easels but no sign — counted toward easels, excluded from prints.
+  printable   Boolean      @default(true)
 
   // Placement
   placementArea      String?   @map("placement_area")
@@ -268,6 +321,8 @@ model Sign {
   previewImagePath    String?  @map("preview_image_path")
   exportPdfPath       String?  @map("export_pdf_path")
   generationError     String?  @map("generation_error")
+  // The batch that last generated this sign (in-app generation orchestration).
+  generationBatchId   Int?     @map("generation_batch_id")
 
   // Event scheduling (rotating signs)
   eventStart     DateTime? @map("event_start")
@@ -277,6 +332,12 @@ model Sign {
   // Delivery
   deliveredBy String?   @map("delivered_by")
   deliveredAt DateTime? @map("delivered_at")
+  // Receiving detail for externally-produced items (Phase 2): how many actually
+  // arrived from the print shop vs `quantity` ordered, any damage/condition note,
+  // and an optional proof photo (Blob pathname, server-only — mirrors deployPhotoUrl).
+  receivedQty      Int?    @map("received_qty")
+  deliveryCondition String? @map("delivery_condition")
+  deliveryPhotoUrl  String? @map("delivery_photo_url")
 
   // Deployment
   deployedBy          String?   @map("deployed_by")
@@ -284,6 +345,24 @@ model Sign {
   deploymentNotes     String?   @map("deployment_notes")
   equipmentCheckedOut Boolean   @default(false) @map("equipment_checked_out")
   equipmentReturned   Boolean   @default(false) @map("equipment_returned")
+
+  // External handoff lifecycle (Phase 2) — for union_installed / ops_map items we
+  // don't deploy ourselves. handedOffTo is a free-text recipient ("Union Local 720 —
+  // Mike", "NOC dispatch"), matching the loose actor-reference convention (deployedBy,
+  // changedBy — no FK). handoffPhotoUrl and installPhotoUrl are Blob pathnames
+  // (server-only). install* is our confirmation the item went up, with an optional
+  // proof photo. Timestamps stamped by stampsForStatus on the
+  // handed_off / installed transitions; the structured fields set by the dedicated
+  // lifecycle actions (signs/lifecycle-actions.ts).
+  handedOffTo    String?   @map("handed_off_to")
+  handedOffBy    String?   @map("handed_off_by")
+  handedOffAt    DateTime? @map("handed_off_at")
+  handoffNotes   String?   @map("handoff_notes")
+  handoffPhotoUrl String?  @map("handoff_photo_url")
+  installedBy    String?   @map("installed_by")
+  installedAt    DateTime? @map("installed_at")
+  installNotes   String?   @map("install_notes")
+  installPhotoUrl String?  @map("install_photo_url")
 
   // Field-deployment claim (M6). A crew claims a `sorted` sign for deployment;
   // the claim is an exclusive lock (claimedByCrewId non-null = held), orthogonal
@@ -306,11 +385,12 @@ model Sign {
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")
 
-  zone           Zone?               @relation(fields: [zoneId], references: [id])
-  location       Location?           @relation(fields: [locationId], references: [id])
-  template       SignTemplate?       @relation(fields: [templateId], references: [id])
-  statusHistory  StatusHistory[]
-  tagAssignments SignTagAssignment[]
+  zone            Zone?               @relation(fields: [zoneId], references: [id])
+  location        Location?           @relation(fields: [locationId], references: [id])
+  template        SignTemplate?       @relation(fields: [templateId], references: [id])
+  generationBatch GenerationBatch?    @relation(fields: [generationBatchId], references: [id], onDelete: SetNull)
+  statusHistory   StatusHistory[]
+  tagAssignments  SignTagAssignment[]
 
   @@index([status])
   @@index([requestor])
@@ -318,11 +398,13 @@ model Sign {
   @@index([locationId])
   @@index([deploymentPriority])
   @@index([signType])
+  @@index([category])
   @@index([itemId])
   @@index([eventStart])
   @@index([deploymentSlot])
   @@index([templateId])
   @@index([generationPipeline])
+  @@index([generationBatchId])
   // Composite indexes for the list page's filter+sort (filter col first, then the
   // [deploymentPriority, itemId] sort) so a status/zone-filtered list is one scan.
   @@index([status, deploymentPriority, itemId])
@@ -341,6 +423,10 @@ model StatusHistory {
   changedBy String?  @map("changed_by")
   changedAt DateTime @default(now()) @map("changed_at")
   notes     String?
+  // Idempotency key for offline-queued status changes (M11 #2). Online changes
+  // leave it null (Postgres allows many NULLs under a unique index); a queued
+  // change carries the client UUID so an at-least-once replay dedupes here.
+  clientId  String?  @unique @map("client_id")
 
   sign Sign @relation(fields: [signId], references: [id], onDelete: Cascade)
 

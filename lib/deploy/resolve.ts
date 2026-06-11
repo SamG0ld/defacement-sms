@@ -10,6 +10,7 @@ import type {
   ClaimResponse,
   DeployEventInput,
   DeployResult,
+  SetSignStatusResult,
 } from "@/lib/deploy/contract";
 
 // ── Claims ────────────────────────────────────────────────────────────────────
@@ -137,4 +138,23 @@ export function classifyDeploys(
 
   const applyClientIds = new Set(toApply.map((e) => e.clientId));
   return { toApply, toLogConflict, applyClientIds, results };
+}
+
+// ── Sign status (single offline-queued change) ────────────────────────────────
+
+// Decide the outcome of a single status change from the pre-write reads, in this
+// precedence: an already-seen clientId is a duplicate replay (whatever the sign's
+// current state); then a missing sign is not_found; then an unchanged status is a
+// no-op (nothing to replay, no history row); otherwise apply. The service does
+// the writes and reuses this so the branching is unit-testable without a DB.
+// `currentStatus` is undefined when the sign no longer exists.
+export function classifySetStatus(args: {
+  alreadyProcessed: boolean;
+  currentStatus: string | undefined;
+  targetStatus: string;
+}): SetSignStatusResult {
+  if (args.alreadyProcessed) return "duplicate";
+  if (args.currentStatus === undefined) return "not_found";
+  if (args.currentStatus === args.targetStatus) return "noop";
+  return "applied";
 }

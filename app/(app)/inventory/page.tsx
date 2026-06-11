@@ -72,17 +72,21 @@ export default async function InventoryPage({
     }),
     // Aggregate in the DB so the print summary stays cheap as signs grow.
     prisma.sign.groupBy({
-      by: ["size", "doubleSided"],
+      by: ["category", "size", "doubleSided", "needsEasel", "printable"],
       _sum: { quantity: true },
     }),
   ]);
 
-  // Derived "print summary" — sheet 6's auto-counts, recomputed from the signs
-  // (easels-required is derived from the 22x28/24x36 sizes, see computePrintSummary).
+  // Derived "print summary" — sheet 6's auto-counts, recomputed from the signs.
+  // Counts are per category: easels honor the Easel Y/N flag, meterboard stands
+  // come from the meterboard category, prints exclude bare easels (see computePrintSummary).
   const summary = computePrintSummary(
     sizeGroups.map((g) => ({
+      category: g.category,
       size: g.size,
       doubleSided: g.doubleSided,
+      needsEasel: g.needsEasel,
+      printable: g.printable,
       quantity: g._sum.quantity ?? 0,
     })),
   );

@@ -56,12 +56,17 @@ async function loadContext(): Promise<MappingContext> {
   const [zones, tags, existing] = await Promise.all([
     prisma.zone.findMany({ select: { id: true, zoneCode: true } }),
     prisma.signTag.findMany({ select: { slug: true } }),
-    prisma.sign.findMany({ select: { itemId: true, signText: true } }),
+    prisma.sign.findMany({
+      select: { itemId: true, signText: true, size: true },
+    }),
   ]);
   return {
     zoneByCode: new Map(zones.map((z) => [z.zoneCode.toUpperCase(), z.id])),
     tagSlugs: new Set(tags.map((t) => t.slug)),
-    existingKeys: new Set(existing.map((s) => `${s.itemId} ${s.signText}`)),
+    // Key must match categorizeRows: itemId + signText + size.
+    existingKeys: new Set(
+      existing.map((s) => `${s.itemId} ${s.signText} ${s.size}`),
+    ),
   };
 }
 

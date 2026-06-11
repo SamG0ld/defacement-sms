@@ -193,6 +193,14 @@ function PreviewPanel({
           ` Ignored: ${preview.ignoredHeaders.join(", ")}.`}
       </div>
 
+      {preview.notices && preview.notices.length > 0 && (
+        <div className="rounded-md border border-amber-700/50 bg-amber-950/30 p-3 text-sm text-amber-200">
+          {preview.notices.map((n, i) => (
+            <p key={i}>{n}</p>
+          ))}
+        </div>
+      )}
+
       {counts.duplicate > 0 && (
         <label className="flex items-center gap-2 text-sm text-zinc-300">
           <input

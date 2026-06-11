@@ -58,7 +58,16 @@ async function captureRedirect(p: Promise<unknown>): Promise<string> {
 
 function form(fields: Record<string, string>): FormData {
   const fd = new FormData();
-  for (const [k, v] of Object.entries(fields)) fd.set(k, v);
+  // The real SignForm always submits a category (select defaults to easel_sign)
+  // and the printable checkbox (defaults checked) — mirror that so the schema,
+  // which requires category, validates. Explicit fields still override.
+  for (const [k, v] of Object.entries({
+    category: "easel_sign",
+    printable: "on",
+    ...fields,
+  })) {
+    fd.set(k, v);
+  }
   return fd;
 }
 
@@ -91,6 +100,9 @@ describe("createSign", () => {
     const sign = await prisma.sign.findFirst({ where: { itemId: "NEW-1" } });
     expect(sign?.signText).toBe("New Sign");
     expect(sign?.quantity).toBe(3);
+    // category + printable flow through the create write-path.
+    expect(sign?.category).toBe("easel_sign");
+    expect(sign?.printable).toBe(true);
   });
 });
 

@@ -1,7 +1,11 @@
 // Shared, server-safe constants + helpers for the signs domain UI.
 // No "use client" / no React here — imported by pages and Server Actions alike.
-import type { Prisma, SignStatus } from "@/app/generated/prisma/client";
-import { SIGN_FORM_TYPES, isMeterboard } from "@/lib/print-summary";
+import type {
+  Prisma,
+  SignCategory,
+  SignStatus,
+} from "@/app/generated/prisma/client";
+import { SIGN_FORM_TYPES } from "@/lib/print-summary";
 
 // Canonical workflow order. Kept as a plain tuple (not the Prisma enum object)
 // so it can drive ordered UI and ranking (stampsForStatus) without depending on
@@ -16,7 +20,45 @@ export const SIGN_STATUSES = [
   "delivered",
   "sorted",
   "deployed",
+  // External-item terminal path (Phase 2): union_installed / ops_map signs branch
+  // off after `delivered` into handed_off → installed instead of sorted → deployed.
+  // Kept after deployed so the existing delivered/deployed ranks are unchanged.
+  "handed_off",
+  "installed",
 ] as const satisfies readonly SignStatus[];
+
+// Item-class vocabulary for the form <select> and the list filter. Distinct classes
+// count + need hardware differently (see lib/print-summary). Order is display order.
+export const SIGN_CATEGORIES = [
+  "easel_sign",
+  "meterboard",
+  "socks",
+  "ops_map",
+  "union_installed",
+  "other",
+] as const satisfies readonly SignCategory[];
+
+export const SIGN_CATEGORY_LABELS: Record<SignCategory, string> = {
+  easel_sign: "Easel sign (22×28 / 24×36)",
+  meterboard: "Meterboard (4×8)",
+  socks: "Socks (21×42 flying)",
+  ops_map: "Ops / venue map (paper)",
+  union_installed: "Union-installed (banner / graphic)",
+  other: "Other / unclassified",
+};
+
+// Categories produced off-site and installed by an external actor (union crew /
+// ops team). These follow the delivered → handed_off → installed lifecycle
+// (lifecycle-actions.ts) instead of our own sorted → deployed flow, and are the
+// only categories for which the LifecyclePanel + lifecycle actions apply.
+export const EXTERNAL_CATEGORIES = [
+  "union_installed",
+  "ops_map",
+] as const satisfies readonly SignCategory[];
+
+export function isExternalCategory(category: SignCategory): boolean {
+  return (EXTERNAL_CATEGORIES as readonly SignCategory[]).includes(category);
+}
 
 // Note: the old step-wise VALID_TRANSITIONS / allowedNextStatuses / isValidTransition
 // were removed when status changes became direct jump-to-any (a sign can be set
@@ -32,6 +74,7 @@ export type SignFilters = {
   tag?: string;
   slot?: string;
   type?: string;
+  category?: string;
   q?: string;
   // Deploy-by urgency, used by the dashboard quick-links. "today" = due on the
   // current Vegas date; "overdue" = due before today. Both imply "not yet
@@ -51,6 +94,9 @@ export function buildSignWhere(f: SignFilters): Prisma.SignWhereInput {
   if (f.tag) where.tagAssignments = { some: { tag: { slug: f.tag } } };
   if (f.slot) where.deploymentSlot = f.slot;
   if (f.type) where.signType = f.type;
+  if (f.category && SIGN_CATEGORIES.includes(f.category as SignCategory)) {
+    where.category = f.category as SignCategory;
+  }
   // Trim + cap the free-text term: bounds the cost of the triple ILIKE scan and
   // keeps the list and export searches identical.
   const q = f.q?.trim().slice(0, 200);
@@ -87,6 +133,10 @@ export type StampPatch = {
   deliveredBy?: string | null;
   deployedAt?: Date | null;
   deployedBy?: string | null;
+  handedOffAt?: Date | null;
+  handedOffBy?: string | null;
+  installedAt?: Date | null;
+  installedBy?: string | null;
 };
 
 export function stampsForStatus(
@@ -104,12 +154,40 @@ export function stampsForStatus(
     patch.deliveredAt = null;
     patch.deliveredBy = null;
   }
+  // deployed and the external fork (handed_off/installed) are SIBLING terminals on
+  // mutually-exclusive paths — a sign is deployed by us OR installed externally,
+  // never both. So clear deployed not just on a rank-below move but whenever we
+  // enter the external fork; symmetrically, entering deployed clears handed_off +
+  // installed below (they rank above deployed, so the rank rule already nulls them).
   if (target === "deployed") {
     patch.deployedAt = now;
     patch.deployedBy = changedBy;
-  } else if (rank < rankOf("deployed")) {
+  } else if (
+    rank < rankOf("deployed") ||
+    target === "handed_off" ||
+    target === "installed"
+  ) {
     patch.deployedAt = null;
     patch.deployedBy = null;
+  }
+  // External-item steps (handed_off / installed). Same rank rule as above: entering
+  // the step stamps who+when; moving below it clears its stamp. The structured
+  // handoff fields (handedOffTo, photos, notes, receivedQty) are NOT touched here —
+  // those are set by the dedicated lifecycle actions; this stays pure so the bulk
+  // updateMany path can apply one shared patch across a mixed selection.
+  if (target === "handed_off") {
+    patch.handedOffAt = now;
+    patch.handedOffBy = changedBy;
+  } else if (rank < rankOf("handed_off")) {
+    patch.handedOffAt = null;
+    patch.handedOffBy = null;
+  }
+  if (target === "installed") {
+    patch.installedAt = now;
+    patch.installedBy = changedBy;
+  } else if (rank < rankOf("installed")) {
+    patch.installedAt = null;
+    patch.installedBy = null;
   }
   return patch;
 }
@@ -254,26 +332,47 @@ export function statusBadgeClass(status: SignStatus): string {
       return "badge-sorted";
     case "deployed":
       return "badge-deployed";
+    case "handed_off":
+      return "badge-handed_off";
+    case "installed":
+      return "badge-installed";
     default:
       return "border-zinc-700 bg-zinc-900 text-zinc-300";
   }
 }
 
 // Hardware (mounting gear) is broader than easels: easel signs need an easel,
-// meterboard (4x8) signs need a meterboard stand. "Needs hardware" is derived
-// from existing sign data — needsEasel OR a meterboard size — so it works on
-// every sign without a new column. hardwareKind names the gear for display
-// (easel wins if a sign somehow reads as both).
-type HardwareInput = { needsEasel: boolean; size: string };
+// meterboard signs need a meterboard stand. Derived from needsEasel OR the sign's
+// category (meterboard) — category-based so a paper "4x8 (printed)" ops map isn't
+// mistaken for a meterboard. hardwareKind names the gear (easel wins if both).
+type HardwareInput = { needsEasel: boolean; category: SignCategory };
 
 export function needsHardware(sign: HardwareInput): boolean {
-  return sign.needsEasel || isMeterboard(sign.size);
+  return sign.needsEasel || sign.category === "meterboard";
 }
 
 export function hardwareKind(
   sign: HardwareInput,
 ): "easel" | "meterboard stand" | null {
   if (sign.needsEasel) return "easel";
-  if (isMeterboard(sign.size)) return "meterboard stand";
+  if (sign.category === "meterboard") return "meterboard stand";
   return null;
+}
+
+// Build the href for a live-search navigation: carry the other active filters
+// (`otherParams`, a query string WITHOUT `q`/`page`), set or clear the trimmed
+// search term, and always drop `page` so a new search lands on page 1. Pure so
+// the client SearchField island and tests share one source of truth.
+export function buildSearchHref(
+  pathname: string,
+  otherParams: string,
+  query: string,
+): string {
+  const params = new URLSearchParams(otherParams);
+  params.delete("page");
+  const q = query.trim();
+  if (q) params.set("q", q);
+  else params.delete("q");
+  const qs = params.toString();
+  return qs ? `${pathname}?${qs}` : pathname;
 }

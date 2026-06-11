@@ -9,7 +9,7 @@ import { prisma } from "@/lib/db";
 // preserved. deploy_events is FK-free, so it's truncated explicitly.
 beforeEach(async () => {
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "signs", "status_history", "audit_log", "equipment_inventory", "crews", "crew_members", "deploy_events" RESTART IDENTITY CASCADE',
+    'TRUNCATE TABLE "signs", "status_history", "audit_log", "equipment_inventory", "crews", "crew_members", "deploy_events", "generation_batches" RESTART IDENTITY CASCADE',
   );
 });
 

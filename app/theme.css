@@ -34,4 +34,10 @@
      from the neighbouring cyan/teal stages while staying on-palette. */
   --status-sorted: color-mix(in oklab, var(--dc-gold), var(--dc-cyan));
   --status-deployed: var(--dc-teal);
+  /* External-item terminal path (Phase 2). handed_off = out of our hands to a union
+     crew / ops team; a gold+red blend (amber) reads as "in transit / attention".
+     installed = confirmed up (the external-fork success terminal); a teal+gold blend
+     keeps it distinct from deployed's teal and sorted's gold+cyan. */
+  --status-handed_off: color-mix(in oklab, var(--dc-gold), var(--dc-red));
+  --status-installed: color-mix(in oklab, var(--dc-teal), var(--dc-gold));
 }

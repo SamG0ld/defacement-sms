@@ -176,3 +176,73 @@ export type ChangesResponse = {
   cursor: string;
   signs: DeploySignView[]; // signs whose updatedAt > since
 };
+
+// ── Sign status (single offline-queued change) ────────────────────────────────
+
+// The sign workflow stages, in order. DUPLICATED here on purpose: this file must
+// stay dependency-light (zod only) so it can be shared with the iOS client, and
+// `lib/` must not import from `app/(app)/signs/_lib`. The drift between this and
+// SIGN_STATUSES (the app-side source of truth) is locked by a unit test
+// (tests/unit/sign-status-contract.test.ts) so they can never silently diverge.
+export const signStatuses = [
+  "pending",
+  "generated",
+  "printed",
+  "delivered",
+  "sorted",
+  "deployed",
+  // External-item terminal path (M13/M14): union_installed / ops_map signs branch
+  // off after `delivered` into handed_off → installed instead of sorted → deployed.
+  // Appended after deployed to keep existing ranks — must mirror SIGN_STATUSES.
+  "handed_off",
+  "installed",
+] as const;
+export type SignStatusValue = (typeof signStatuses)[number];
+
+// changedAt is the client's local change instant, NOT server time (a change made
+// offline must keep the time it happened), so it's client-controlled — but bounded.
+// Reject absurd values a hostile or clock-broken client could send (e.g. year
+// 275760), which would poison the audited timeline and overflow downstream date
+// math. The window is generous: a floor far below any real change, an upper bound
+// of now + a day to tolerate RTC skew. An out-of-range change dead-letters
+// client-side (surfaced as failed in the queue), so it's flagged, never silently
+// lost. The online updateSignStatus action uses server time and needs no bound.
+const CHANGED_AT_FLOOR_MS = Date.parse("2024-01-01T00:00:00.000Z");
+const CHANGED_AT_SKEW_MS = 24 * 60 * 60 * 1000;
+const changedAt = z.coerce.date().refine(
+  (d) => {
+    const t = d.getTime();
+    return t >= CHANGED_AT_FLOOR_MS && t <= Date.now() + CHANGED_AT_SKEW_MS;
+  },
+  { message: "changedAt is outside the acceptable range" },
+);
+
+// A single per-sign status change, queued client-side and replayed at-least-once.
+// Idempotent on `clientId` (StatusHistory.clientId is @unique).
+export const setSignStatusSchema = z.object({
+  clientId,
+  signId,
+  status: z.enum(signStatuses),
+  changedAt,
+  notes: z.string().max(2000).optional(),
+});
+export type SetSignStatusInput = z.infer<typeof setSignStatusSchema>;
+
+// Per-change outcome:
+//   applied   — the change set the sign to the new status (history row written)
+//   duplicate — same clientId already processed (idempotent replay, no-op)
+//   noop      — the sign was already in that status; nothing to replay, no row
+//   not_found — no such sign (deleted between the client's read and this replay)
+export const setSignStatusResults = [
+  "applied",
+  "duplicate",
+  "noop",
+  "not_found",
+] as const;
+export type SetSignStatusResult = (typeof setSignStatusResults)[number];
+
+export type SetSignStatusResponse = {
+  signId: number;
+  status: SignStatusValue;
+  result: SetSignStatusResult;
+};

@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { DeployPhotoPin } from "../../signs/_components/DeployPhoto";
 import { ZoomCanvas } from "./ZoomCanvas";
 
 export type FloorPin = {
@@ -11,11 +12,15 @@ export type FloorPin = {
   active?: boolean;
   // Tailwind bg class for the dot (e.g. a status color). Defaults to accent.
   toneClass?: string;
+  // When set, render a tappable pin that opens this sign's deploy photo instead
+  // of a static dot/link. Mutually exclusive with href in practice.
+  photoSignId?: number;
 };
 
 // Read-only floor map with pins overlaid by percentage (resolution-independent).
 // Shared by the sign-detail "Where it goes" panel and the /map overview. Server
-// component — no interactivity beyond optional per-pin links.
+// component; pins are static dots, optional links, or — when photoSignId is set
+// — a DeployPhotoPin client island that opens the sign's deploy photo.
 export function FloorPinView({
   src,
   label,
@@ -43,9 +48,16 @@ export function FloorPinView({
               key={p.key}
               className="absolute -translate-x-1/2 -translate-y-1/2"
               style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
-              title={p.title}
+              // The photo pin carries its own title; avoid a double tooltip.
+              title={p.photoSignId ? undefined : p.title}
             >
-              {p.href ? (
+              {p.photoSignId ? (
+                <DeployPhotoPin
+                  signId={p.photoSignId}
+                  active={p.active}
+                  title={p.title}
+                />
+              ) : p.href ? (
                 <Link href={p.href} aria-label={p.title}>
                   {dot}
                 </Link>
