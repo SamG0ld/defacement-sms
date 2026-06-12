@@ -43,8 +43,7 @@ a Flask app that ran a large hacking conference's signage workflow in production
   Generation batches, a Figma export of the sign list, and pulling rendered previews back from
   Figma by Item-ID are in place; the final print-ready art rendering is the most complex remaining
   piece.
-- **Production deployment** — Vercel + a managed Postgres + Upstash + Resend. See
-  [DEPLOY.md](DEPLOY.md).
+- **Production deployment** — finalizing the production hosting environment.
 
 ## Deferred
 

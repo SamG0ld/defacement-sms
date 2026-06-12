@@ -4,13 +4,6 @@ Signage management for a large hacking conference's signage team — a single so
 hundreds of signs deployed across the conference each year, replacing the spreadsheet
 workflow with a database-backed web app.
 
-> **Status — active rewrite, core complete.** This is the Next.js rebuild of a production-tested
-> Flask app that ran the signage workflow in production for several years. Authentication, the full data model, the
-> core domain UI (sign management, CSV import/export, inventory, admin/user management), the
-> external-item delivery/handoff lifecycle, and the offline-first field-deployment PWA are all in
-> place. What remains is finishing the sign-art generation pipeline and production deployment. See
-> the [Roadmap](#roadmap).
-
 ## Tech stack
 
 | Layer | Choice |
@@ -32,6 +25,10 @@ workflow with a database-backed web app.
 - **Closed registration** — sign-in is invitation-gated in the `signIn` callback: only an
   email with a pre-existing (admin-created) user row may authenticate. No open self-signup. The
   magic-link path enforces this before sending — a link is only ever mailed to a known active user.
+- **Sign-in hardening** — Google sign-in requires a verified email (`email_verified`) so a
+  pre-provisioned row can't be claimed by an unverified address; magic links expire in 15 minutes
+  and the send path avoids account enumeration; and post-login redirects are constrained to
+  same-origin/relative `callbackUrl`s to block open redirects.
 - **Role-based access** — `admin` / `lead` / `volunteer` tiers (`lib/rbac.ts`).
 - **Session kill-switch** — a per-user `tokenVersion`; bumping it invalidates outstanding
   sessions within an hour (the JWT re-reads the DB once per `REFRESH_INTERVAL_MS`).
@@ -42,8 +39,16 @@ workflow with a database-backed web app.
 - **CSRF defense on the native API** — `/api/native/*` mutations require same-origin
   browser metadata (`Sec-Fetch-Site`/`Origin`) plus a JSON content type
   (`lib/deploy/api-guards.ts`); non-browser clients are unaffected.
+- **Upload validation** — uploaded images are validated by **magic bytes**, not the declared
+  content type (PNG/JPEG/WebP only — an SVG, HTML, or renamed binary is rejected), with a size cap
+  and a decompression-bomb guard (`lib/image-upload.ts`); stored blob IDs are sanitized so a crafted
+  name can't escape its path (`lib/blob-image.ts`).
 - **Security headers** — HSTS, a report-only CSP (violations POST to `/api/csp-report` for a
-  data-driven report→enforce flip), `X-Frame-Options`, and more in `next.config.ts`.
+  data-driven report→enforce flip), `X-Frame-Options`, `Referrer-Policy`, a locked-down
+  `Permissions-Policy`, and more in `next.config.ts`.
+- **Production env preflight** — a boot-time check refuses to start in production with missing
+  config or a weak/placeholder `AUTH_SECRET`, so a misconfigured deploy fails fast instead of
+  running insecure (`lib/env.ts`).
 - **Data model** — the full domain schema (signs, zones, locations, tags, equipment, status
   history, audit log) defined in Prisma with migrations applied.
 - **Dashboard** — at-a-glance status counts, a deployment-progress bar, and deploy-by-today /
