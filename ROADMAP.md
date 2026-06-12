@@ -1,7 +1,7 @@
 # Roadmap
 
 A high-level view of where Defacement SMS is and where it's going. This is the Next.js rebuild of
-a Flask app that ran the DEF CON Defacement signage workflow in production through DC33.
+a Flask app that ran a large hacking conference's signage workflow in production for several years.
 
 ## Done
 

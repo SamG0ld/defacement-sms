@@ -1,11 +1,11 @@
-# Defacement SMS — DEF CON Signage Management System
+# Defacement SMS — Signage Management System
 
-Signage management for the DEF CON Defacement team — a single source of truth for the
+Signage management for a large hacking conference's signage team — a single source of truth for the
 hundreds of signs deployed across the conference each year, replacing the spreadsheet
 workflow with a database-backed web app.
 
 > **Status — active rewrite, core complete.** This is the Next.js rebuild of a production-tested
-> Flask app that ran the signage workflow through DC33. Authentication, the full data model, the
+> Flask app that ran the signage workflow in production for several years. Authentication, the full data model, the
 > core domain UI (sign management, CSV import/export, inventory, admin/user management), the
 > external-item delivery/handoff lifecycle, and the offline-first field-deployment PWA are all in
 > place. What remains is finishing the sign-art generation pipeline and production deployment. See
@@ -34,11 +34,16 @@ workflow with a database-backed web app.
   magic-link path enforces this before sending — a link is only ever mailed to a known active user.
 - **Role-based access** — `admin` / `lead` / `volunteer` tiers (`lib/rbac.ts`).
 - **Session kill-switch** — a per-user `tokenVersion`; bumping it invalidates outstanding
-  sessions within 24 hours.
+  sessions within an hour (the JWT re-reads the DB once per `REFRESH_INTERVAL_MS`).
 - **Edge auth gate + rate limiting** — `proxy.ts` (Next.js 16 middleware) guards
-  authenticated routes and throttles auth endpoints.
-- **Security headers** — HSTS, a report-only CSP, `X-Frame-Options`, and more in
-  `next.config.ts`.
+  authenticated routes and throttles auth endpoints. Per-actor backstop limiters also cover
+  the `/api/native/*` sync surface and the mutating server actions; all limiters fail open
+  on an Upstash outage (best-effort throttling never takes down login or the floor sync).
+- **CSRF defense on the native API** — `/api/native/*` mutations require same-origin
+  browser metadata (`Sec-Fetch-Site`/`Origin`) plus a JSON content type
+  (`lib/deploy/api-guards.ts`); non-browser clients are unaffected.
+- **Security headers** — HSTS, a report-only CSP (violations POST to `/api/csp-report` for a
+  data-driven report→enforce flip), `X-Frame-Options`, and more in `next.config.ts`.
 - **Data model** — the full domain schema (signs, zones, locations, tags, equipment, status
   history, audit log) defined in Prisma with migrations applied.
 - **Dashboard** — at-a-glance status counts, a deployment-progress bar, and deploy-by-today /
@@ -61,7 +66,7 @@ workflow with a database-backed web app.
   hand off to a named crew → confirm installed (`delivered → handed_off → installed`), each step
   recording who/when with an optional proof photo stored privately and served through an auth-gated
   route.
-- **CSV import / export** — a source-aware import wizard (DEF CON sign sheet, Master inventory, or
+- **CSV import / export** — a source-aware import wizard (conference sign sheet, master inventory, or
   generic CSV) with a non-destructive dry-run preview that flags valid / invalid / duplicate rows;
   sign categories assigned automatically from the sheet's section structure; filtered export that
   round-trips with import; formula-injection-safe output and size/row caps.
@@ -72,8 +77,8 @@ workflow with a database-backed web app.
   batches of `sorted` signs (exclusive lock) and mark them deployed with an optional photo, working
   with no network on a hostile-RF floor and syncing on reconnect (durable IndexedDB outbox over the
   `/api/native/*` JSON API; private photo storage).
-- **Zones** — LVCC West (Levels 1–3, Halls 1–4) and LVCC North Hall; the importer maps location
-  text to the right zone.
+- **Zones** — configurable venue zones (the reference-data seed ships example convention-center
+  zones — multiple levels plus exhibit halls); the importer maps location text to the right zone.
 - **Admin & user management** — `/users` (add by email + role, change role, deactivate), and an
   admin `/signs/manage` to clear test data or all signs (typed confirmation), with every
   destructive action written to an audit log.
@@ -142,8 +147,8 @@ npx prisma db execute --file prisma/seeds/reference-data.sql
 
 Then go to **Signs → Import** and upload one of:
 
-- **`fixtures/dc33-seed.csv`** — a 16-row slice of real DC33 public wayfinding signage (venue maps,
-  workshops, demo labs, registration), to see the app populated with representative data.
+- **`fixtures/dc33-seed.csv`** — a 16-row slice of representative public conference wayfinding signage
+  (venue maps, workshops, demo labs, registration), to see the app populated with realistic data.
 - **`fixtures/ui-coverage-sample.csv`** — a 16-row fixture that deliberately hits every part of the
   importer: valid/duplicate/invalid rows, zone/tag/slot warnings, an ignored column, every sign-type
   bucket, and the easel/meterboard hardware logic.
@@ -193,7 +198,7 @@ lib/
   ratelimit.ts   Upstash limiter (no-ops when unconfigured)
   invitations.ts SHA-256 hashed, constant-time invitation tokens
 prisma/
-  schema.prisma  14 models (auth + domain)
+  schema.prisma  19 models (auth + domain)
   migrations/
   seeds/         Reference data, equipment types, floor maps, sample signs
 fixtures/        Importable sample CSVs
@@ -213,11 +218,12 @@ tests/           unit (Vitest) + integration (Prisma) + e2e (Playwright)
 
 ## Security
 
-Security headers, a report-only CSP (promotable to enforcing), an edge auth gate, hashed
-single-use invitation tokens, formula-injection-safe CSV export, and a per-user session
-kill-switch are in place. Server-side authorization is centralized in `lib/rbac.ts`
-(`requireSession` / `requireRole`). Secrets live only in `.env` (gitignored); `.env.example` is
-the documented source of truth for variable names.
+Security headers, a report-only CSP with violation reporting (`/api/csp-report`, promotable to
+enforcing), an edge auth gate, same-origin CSRF defense on the `/api/native/*` API, per-actor
+rate limiters that fail open, hashed single-use invitation tokens, formula-injection-safe CSV
+export, and a per-user session kill-switch are in place. Server-side authorization is centralized
+in `lib/rbac.ts` (`requireSession` / `requireRole`). Secrets live only in `.env` (gitignored);
+`.env.example` is the documented source of truth for variable names.
 
 ## Testing
 

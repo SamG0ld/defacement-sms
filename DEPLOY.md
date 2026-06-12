@@ -25,7 +25,7 @@ be scripted.
 ## 2. Seed reference + admin data
 Run against the same database (direct URL is fine):
 ```
-npx prisma db execute --file prisma/seeds/reference-data.sql      # 11 tags + LVCC zones
+npx prisma db execute --file prisma/seeds/reference-data.sql      # 11 tags + venue zones
 npx prisma db execute --file prisma/seeds/equipment-types.sql     # inventory item types
 npx prisma db execute --file prisma/seeds/bootstrap-admins.sql    # admin rows (idempotent)
 ```

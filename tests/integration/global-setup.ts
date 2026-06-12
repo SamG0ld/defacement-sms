@@ -6,7 +6,7 @@ import { execSync } from "node:child_process";
 //
 // Match the DATABASE NAME only (the URL path), never the whole connection
 // string — otherwise a host/credential containing the substring "test" (e.g. a
-// Neon endpoint id like "ep-fast-protest-...") would falsely arm a destructive
+// Neon endpoint id like "ep-xxxx-...") would falsely arm a destructive
 // TRUNCATE. ALLOW_TEST_DB_RESET is the explicit escape hatch (CI uses it against
 // its throwaway container).
 function looksLikeTestDb(url: string): boolean {
