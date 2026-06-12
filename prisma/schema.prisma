@@ -412,6 +412,15 @@ model Sign {
   // Field-deployment: "my crew's claimed signs" and "claimable sorted signs".
   @@index([claimedByCrewId])
   @@index([status, claimedByCrewId])
+  // Dashboard due-today/overdue counts (status filter + deployByDate range).
+  @@index([status, deployByDate])
+  // Delta-pull sync: changes() filters working statuses by updatedAt > cursor.
+  @@index([status, updatedAt])
+  // Trigram GIN indexes for the list's free-text ILIKE search (the migration
+  // also does CREATE EXTENSION pg_trgm, which the schema can't express).
+  @@index([signText(ops: raw("gin_trgm_ops"))], type: Gin, map: "signs_sign_text_trgm_idx")
+  @@index([itemId(ops: raw("gin_trgm_ops"))], type: Gin, map: "signs_item_id_trgm_idx")
+  @@index([placementArea(ops: raw("gin_trgm_ops"))], type: Gin, map: "signs_placement_area_trgm_idx")
   @@map("signs")
 }
 

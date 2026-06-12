@@ -420,6 +420,8 @@ const IMAGE_ERROR: Record<ImageValidationError, string> = {
   empty: "The image file is empty.",
   too_large: `Image is too large (max ${MAX_IMAGE_BYTES / (1024 * 1024)} MB).`,
   unsupported_type: "Unsupported image — upload a PNG, JPEG, or WebP.",
+  bad_dimensions: "Couldn't read the image's dimensions — the file may be corrupt.",
+  too_many_pixels: "Image resolution is too large (max 40 megapixels).",
 };
 
 // Read + validate an uploaded image from a multipart form. Validation is by

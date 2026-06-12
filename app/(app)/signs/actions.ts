@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 
 import { prisma } from "@/lib/db";
+import { checkMutationRateLimit } from "@/lib/ratelimit";
 import { requireRole, requireSession } from "@/lib/rbac";
 import { Prisma } from "@/app/generated/prisma/client";
 import type { SignStatus } from "@/app/generated/prisma/client";
@@ -32,6 +33,13 @@ export async function updateSignStatus(
   formData: FormData,
 ): Promise<void> {
   const session = await requireSession();
+
+  // Generous per-actor backstop (60/min) — open to every active user, so a
+  // role gate alone is not a throttle.
+  const budget = await checkMutationRateLimit(session.user.id);
+  if (!budget.success) {
+    failDetail(signId, "Too many changes at once — wait a minute and try again.");
+  }
 
   const next = formData.get("status");
   const notesRaw = formData.get("notes");

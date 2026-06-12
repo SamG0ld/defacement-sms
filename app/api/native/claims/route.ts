@@ -1,5 +1,9 @@
 import { claimRequestSchema } from "@/lib/deploy/contract";
-import { requireApiSession, runApi } from "@/lib/deploy/api-session";
+import {
+  readJsonBody,
+  requireApiSession,
+  runApi,
+} from "@/lib/deploy/api-session";
 import { claimSigns } from "@/lib/deploy/service";
 
 // POST /api/native/claims — batch-claim sorted signs for a crew (exclusive lock).
@@ -7,9 +11,9 @@ import { claimSigns } from "@/lib/deploy/service";
 // not_found). Idempotent: re-claiming signs this crew already holds re-grants
 // them.
 export async function POST(req: Request): Promise<Response> {
-  return runApi(async () => {
+  return runApi(req, async () => {
     const actor = await requireApiSession();
-    const input = claimRequestSchema.parse(await req.json());
+    const input = claimRequestSchema.parse(await readJsonBody(req));
     return claimSigns(input, actor);
   });
 }

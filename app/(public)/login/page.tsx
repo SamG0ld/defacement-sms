@@ -72,8 +72,8 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
               <p className="font-medium">Check your inbox.</p>
               <p className="mt-1 text-xs text-emerald-300/80">
                 If that email is on the team, a one-time sign-in link is on its
-                way. It expires shortly. Don&apos;t see it? Check spam, or try
-                again.
+                way. It expires in 15 minutes. Don&apos;t see it? Check spam,
+                or try again.
               </p>
             </div>
             <a

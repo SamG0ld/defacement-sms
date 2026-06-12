@@ -80,7 +80,8 @@ export async function previewImport(
   if (!success) {
     return errorPreview("Too many import attempts. Wait a minute and try again.");
   }
-  if (csvText.length > MAX_CSV_BYTES) {
+  // Bytes, not UTF-16 code units — .length undercounts multi-byte text ~2x.
+  if (Buffer.byteLength(csvText, "utf8") > MAX_CSV_BYTES) {
     return errorPreview("File too large (max 5 MB). Split it and import in parts.");
   }
 
@@ -110,7 +111,9 @@ export async function executeImport(
 
   const { success } = await checkActionRateLimit(`import:${session.user.id}`);
   if (!success) throw new Error("rate-limited");
-  if (csvText.length > MAX_CSV_BYTES) throw new Error("file-too-large");
+  if (Buffer.byteLength(csvText, "utf8") > MAX_CSV_BYTES) {
+    throw new Error("file-too-large");
+  }
 
   const rows = parseCsv(csvText);
   if (tooManyRows(rows.length)) throw new Error("too-many-rows");
@@ -137,7 +140,7 @@ export async function executeImport(
 
   if (toInsert.length > 0) {
     // Bulk insert in one statement instead of a per-row create loop (which was N
-    // sequential round-trips to Neon). createManyAndReturn preserves input order
+    // sequential round-trips to Postgres). createManyAndReturn preserves input order
     // on Postgres, so each returned id maps back to its row; the tag links and
     // the per-sign "Imported from CSV" audit-trail history rows (OWASP A09) then
     // go in as two more bulk inserts — all inside one transaction (atomic).

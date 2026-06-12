@@ -180,6 +180,39 @@ describe("applyDeploys — idempotency + conflict", () => {
     expect(history.some((h) => h.newStatus === "deployed")).toBe(true);
   });
 
+  it("strips a crewId the deployer isn't a member of, but still lands the deploy (AR-1)", async () => {
+    const crewA = await crewFor(actorA, "Alpha"); // actorA is a member, actorB is not
+    const s1 = await seedSign();
+    const s2 = await seedSign();
+
+    // actorB forges crewA's label — the deploy applies, but the label is dropped.
+    const forgedRes = await applyDeploys(
+      {
+        events: [
+          { clientId: "forge-1", signId: s1.id, crewId: crewA, deployedAt: new Date(), hasPhoto: false },
+        ],
+      },
+      actorB,
+    );
+    expect(forgedRes.results[0].status).toBe("applied");
+    const forged = await prisma.deployEvent.findUnique({ where: { clientId: "forge-1" } });
+    expect(forged?.crewId).toBeNull(); // forged attribution stripped
+    expect(forged?.deployedByEmail).toBe("b@example.com"); // true actor still recorded
+
+    // A real member's crewId is preserved.
+    const realRes = await applyDeploys(
+      {
+        events: [
+          { clientId: "real-1", signId: s2.id, crewId: crewA, deployedAt: new Date(), hasPhoto: false },
+        ],
+      },
+      actorA,
+    );
+    expect(realRes.results[0].status).toBe("applied");
+    const real = await prisma.deployEvent.findUnique({ where: { clientId: "real-1" } });
+    expect(real?.crewId).toBe(crewA); // member's label kept
+  });
+
   it("replaying the same clientId is a no-op duplicate", async () => {
     const s = await seedSign();
     const ev = {

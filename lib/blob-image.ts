@@ -67,9 +67,12 @@ export async function streamPrivateImage(
   }
   if (!result) return new Response("Not found", { status: 404 });
   if (result.statusCode === 304) {
+    // The SDK may not populate `blob` on a not-modified result; the client's
+    // If-None-Match produced the 304, so it's the correct ETag to echo.
+    const etag = result.blob?.etag ?? ifNoneMatch;
     return new Response(null, {
       status: 304,
-      headers: { ETag: result.blob.etag },
+      headers: etag ? { ETag: etag } : undefined,
     });
   }
   return new Response(result.stream, {
@@ -78,7 +81,10 @@ export async function streamPrivateImage(
       "Content-Type": result.blob.contentType,
       "X-Content-Type-Options": "nosniff",
       "Content-Disposition": "inline",
-      "Cache-Control": "private, max-age=300, must-revalidate",
+      // no-cache (not no-store): the browser keeps the bytes but revalidates
+      // every use — the ETag/304 path above makes that one cheap conditional
+      // request, and a replaced photo/preview shows up immediately on the floor.
+      "Cache-Control": "private, no-cache",
       ETag: result.blob.etag,
     },
   });

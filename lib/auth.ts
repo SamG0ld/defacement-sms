@@ -28,10 +28,11 @@ declare module "next-auth/jwt" {
 }
 
 // How often the JWT callback re-reads the user from the database to pick up
-// role changes, deactivation, and tokenVersion bumps. 24h is a balance between
-// "kill-switch latency" and "DB query per request" — for a small team-internal
-// tool this is plenty.
-const REFRESH_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// role changes, deactivation, and tokenVersion bumps. 1h bounds the kill-switch
+// / role-change propagation latency (AR-3) — a lost shared phone or a demoted
+// account loses access within the hour of its next request — while costing only
+// ~one DB read per active session per hour, negligible at this team size.
+const REFRESH_INTERVAL_MS = 60 * 60 * 1000;
 
 // First-admin bootstrap. Emails listed in BOOTSTRAP_ADMIN_EMAILS may
 // self-provision as admin on first Google sign-in — the minimal unblock before
@@ -50,9 +51,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     strategy: "jwt",
     // 7 days. Shared phones at DEF CON shouldn't carry a 30-day session.
     maxAge: 7 * 24 * 60 * 60,
-    // Rotate the cookie at least daily. Combined with the jwt callback below,
-    // this guarantees a tokenVersion / isActive recheck within 24h of any
-    // active user's next request.
+    // Rotate the cookie at least daily. The jwt callback re-reads the DB within
+    // REFRESH_INTERVAL_MS (1h) of an active user's next request, so a
+    // tokenVersion / isActive / role change propagates within the hour.
     updateAge: 24 * 60 * 60,
   },
   providers: [
@@ -73,6 +74,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // apiKey/from are intentionally omitted: the built-in sender that would
       // consume them is replaced below, and sendMagicLinkEmail reads the env
       // vars directly. Passing them here would be dead, misleading config.
+      //
+      // Token lifetime. NextAuth's default is 24h — a ~100x wider interception
+      // window than the "expires in 15 minutes" the email/UI promises, and too
+      // long for the shared-phone threat model. 15 minutes is plenty to open
+      // an inbox.
+      maxAge: 15 * 60,
       async sendVerificationRequest({ identifier, url }) {
         const email = identifier.toLowerCase();
         const user = await prisma.user.findUnique({

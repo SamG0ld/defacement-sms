@@ -242,9 +242,13 @@ export const DEPLOYMENT_SLOTS: ReadonlyArray<{ value: string; label: string }> =
     })),
   );
 
+const SLOT_LABEL_BY_VALUE = new Map(
+  DEPLOYMENT_SLOTS.map((s) => [s.value, s.label]),
+);
+
 export function deploymentSlotLabel(value: string | null | undefined): string {
   if (!value) return "—";
-  return DEPLOYMENT_SLOTS.find((s) => s.value === value)?.label ?? value;
+  return SLOT_LABEL_BY_VALUE.get(value) ?? value;
 }
 
 // signType is a free-text column, but the suggestions surfaced via <datalist> on

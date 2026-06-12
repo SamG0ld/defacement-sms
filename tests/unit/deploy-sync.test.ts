@@ -213,6 +213,127 @@ describe("drainOutbox — outcomes", () => {
   });
 });
 
+describe("drainOutbox — deploy batching", () => {
+  it("posts consecutive deploys as ONE batch and drains them all", async () => {
+    vi.mocked(postDeploy).mockResolvedValue({
+      results: [
+        { clientId: "d1", signId: 1, status: "applied" },
+        { clientId: "d2", signId: 2, status: "applied" },
+        { clientId: "d3", signId: 3, status: "duplicate" },
+      ],
+    });
+    vi.mocked(allEntries).mockResolvedValue([
+      deployEntry({ clientId: "d1", createdAt: 1 }),
+      deployEntry({ clientId: "d2", createdAt: 2, payload: { signId: 2, crewId: 1, deployedAt: "2026-08-07T18:00:00.000Z", hasPhoto: false } }),
+      deployEntry({ clientId: "d3", createdAt: 3, payload: { signId: 3, crewId: 1, deployedAt: "2026-08-07T18:00:00.000Z", hasPhoto: false } }),
+    ]);
+
+    const res = await drainOutbox();
+    expect(postDeploy).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(postDeploy).mock.calls[0][0].events).toHaveLength(3);
+    expect(res.drained).toBe(3);
+    expect(deleteEntry).toHaveBeenCalledWith("d1");
+    expect(deleteEntry).toHaveBeenCalledWith("d2");
+    expect(deleteEntry).toHaveBeenCalledWith("d3");
+  });
+
+  it("a claim between deploys breaks the run (FIFO claim→deploy order preserved)", async () => {
+    const order: string[] = [];
+    vi.mocked(postDeploy).mockImplementation(async (req) => {
+      order.push(`deploy:${req.events.map((e) => e.clientId).join(",")}`);
+      return {
+        results: req.events.map((e) => ({
+          clientId: e.clientId,
+          signId: e.signId,
+          status: "applied" as const,
+        })),
+      };
+    });
+    vi.mocked(postClaim).mockImplementation(async () => {
+      order.push("claim");
+      return { granted: [], rejected: [] };
+    });
+    vi.mocked(allEntries).mockResolvedValue([
+      deployEntry({ clientId: "d1", createdAt: 1 }),
+      claimEntry({ clientId: "c1", createdAt: 2 }),
+      deployEntry({ clientId: "d2", createdAt: 3 }),
+    ]);
+
+    const res = await drainOutbox();
+    expect(order).toEqual(["deploy:d1", "claim", "deploy:d2"]);
+    expect(res.drained).toBe(3);
+  });
+
+  it("surfaces conflicts from the batched results and still drains those entries", async () => {
+    vi.mocked(postDeploy).mockResolvedValue({
+      results: [
+        { clientId: "d1", signId: 1, status: "applied" },
+        { clientId: "d2", signId: 9, status: "conflict" },
+      ],
+    });
+    vi.mocked(allEntries).mockResolvedValue([
+      deployEntry({ clientId: "d1", createdAt: 1 }),
+      deployEntry({ clientId: "d2", createdAt: 2 }),
+    ]);
+
+    const res = await drainOutbox();
+    expect(res.deployConflicts).toEqual([9]);
+    expect(res.drained).toBe(2);
+  });
+
+  it("falls back to per-entry on a batch-level 4xx so only the offender dead-letters", async () => {
+    vi.mocked(postDeploy)
+      // The batch POST fails permanently…
+      .mockRejectedValueOnce(new ApiHttpError(422, "bad event"))
+      // …then per-entry replay: first ok, second the actual offender.
+      .mockResolvedValueOnce({
+        results: [{ clientId: "d1", signId: 1, status: "applied" }],
+      })
+      .mockRejectedValueOnce(new ApiHttpError(422, "bad event"));
+    vi.mocked(allEntries).mockResolvedValue([
+      deployEntry({ clientId: "d1", createdAt: 1 }),
+      deployEntry({ clientId: "d2", createdAt: 2 }),
+    ]);
+
+    const res = await drainOutbox();
+    expect(postDeploy).toHaveBeenCalledTimes(3);
+    expect(res.drained).toBe(1);
+    expect(res.deadLettered).toBe(1);
+    expect(deleteEntry).toHaveBeenCalledWith("d1");
+    expect(putEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "failed", clientId: "d2" }),
+    );
+  });
+
+  it("leaves an entry pending when the server didn't echo its result", async () => {
+    vi.mocked(postDeploy).mockResolvedValue({
+      results: [{ clientId: "d1", signId: 1, status: "applied" }],
+    });
+    vi.mocked(allEntries).mockResolvedValue([
+      deployEntry({ clientId: "d1", createdAt: 1 }),
+      deployEntry({ clientId: "d2", createdAt: 2 }),
+    ]);
+
+    const res = await drainOutbox();
+    expect(res.drained).toBe(1);
+    expect(deleteEntry).toHaveBeenCalledWith("d1");
+    expect(deleteEntry).not.toHaveBeenCalledWith("d2");
+  });
+
+  it("stops the whole drain when the batch hits a NetworkError", async () => {
+    vi.mocked(postDeploy).mockRejectedValue(new NetworkError("offline"));
+    vi.mocked(allEntries).mockResolvedValue([
+      deployEntry({ clientId: "d1", createdAt: 1 }),
+      deployEntry({ clientId: "d2", createdAt: 2 }),
+    ]);
+
+    const res = await drainOutbox();
+    expect(res.stoppedOffline).toBe(true);
+    expect(res.drained).toBe(0);
+    expect(deleteEntry).not.toHaveBeenCalled();
+  });
+});
+
 describe("drainOutbox — server feedback accumulates", () => {
   it("collects claim rejections", async () => {
     vi.mocked(postClaim).mockResolvedValue({

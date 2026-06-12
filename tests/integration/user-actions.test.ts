@@ -119,6 +119,16 @@ describe("setUserRole", () => {
     const audit = await prisma.auditLog.findFirst({ where: { action: "user.role" } });
     expect(audit?.detail).toContain("lead");
   });
+
+  it("bumps tokenVersion so a demotion revokes the live session", async () => {
+    const u = await prisma.user.create({
+      data: { email: "test-demote@example.com", role: "lead", tokenVersion: 0 },
+    });
+    await setUserRole(u.id, form({ role: "volunteer" }));
+    const after = await prisma.user.findUnique({ where: { id: u.id } });
+    expect(after?.role).toBe("volunteer");
+    expect(after?.tokenVersion).toBe(1);
+  });
 });
 
 describe("setUserActive", () => {

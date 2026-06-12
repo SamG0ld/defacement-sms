@@ -38,6 +38,15 @@ const HEADER_ALIASES: Record<string, string[]> = {
 const SLOT_VALUES = new Set(DEPLOYMENT_SLOTS.map((s) => s.value));
 const TRUTHY = new Set(["y", "yes", "true", "x", "1", "✓"]);
 
+// Inverted alias lookup, hoisted once — mapHeaders scans this per header cell.
+// First-wins on a duplicated alias, matching HEADER_ALIASES declaration order.
+const ALIAS_TO_FIELD = new Map<string, string>();
+for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
+  for (const alias of aliases) {
+    if (!ALIAS_TO_FIELD.has(alias)) ALIAS_TO_FIELD.set(alias, field);
+  }
+}
+
 // Hard cap on data rows per import. Comfortably above the real DC sheet (~390)
 // while preventing a multi-million-row file from exhausting memory / saturating
 // the DB through the per-row insert loop in executeImport.
@@ -48,11 +57,11 @@ export type ColumnMap = Partial<Record<keyof typeof HEADER_ALIASES, number>>;
 export function mapHeaders(headerRow: string[]): ColumnMap {
   const map: ColumnMap = {};
   headerRow.forEach((raw, idx) => {
-    const h = raw.trim().toLowerCase();
-    for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
-      if (aliases.includes(h) && map[field as keyof ColumnMap] === undefined) {
-        map[field as keyof ColumnMap] = idx;
-      }
+    const field = ALIAS_TO_FIELD.get(raw.trim().toLowerCase()) as
+      | keyof ColumnMap
+      | undefined;
+    if (field !== undefined && map[field] === undefined) {
+      map[field] = idx;
     }
   });
   return map;
@@ -206,17 +215,21 @@ export function categorizeRows(
     });
   }
 
+  let valid = 0;
+  let invalid = 0;
+  let duplicate = 0;
+  for (const r of out) {
+    if (r.status === "valid") valid += 1;
+    else if (r.status === "invalid") invalid += 1;
+    else duplicate += 1;
+  }
+
   return {
     headerError: null,
     mappedColumns: meta.mappedColumns,
     ignoredHeaders: meta.ignoredHeaders,
     rows: out,
-    counts: {
-      valid: out.filter((r) => r.status === "valid").length,
-      invalid: out.filter((r) => r.status === "invalid").length,
-      duplicate: out.filter((r) => r.status === "duplicate").length,
-      total: out.length,
-    },
+    counts: { valid, invalid, duplicate, total: out.length },
     notices: meta.notices,
   };
 }

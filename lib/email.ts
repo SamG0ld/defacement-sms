@@ -64,7 +64,7 @@ function magicLinkText(url: string): string {
   return [
     "Sign in to Defacement SMS",
     "",
-    "Click the link below to sign in. It expires shortly and can only be used once.",
+    "Click the link below to sign in. It expires in 15 minutes and can only be used once.",
     "",
     url,
     "",
@@ -76,7 +76,7 @@ function magicLinkHtml(url: string): string {
   const safe = escapeHtml(url);
   return `<!doctype html><html><body style="font-family:system-ui,sans-serif;line-height:1.5;color:#18181b">
 <h2 style="margin:0 0 12px">Sign in to Defacement SMS</h2>
-<p>Click the button below to sign in. The link expires shortly and can only be used once.</p>
+<p>Click the button below to sign in. The link expires in 15 minutes and can only be used once.</p>
 <p style="margin:24px 0">
   <a href="${safe}" style="background:#1d4ed8;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;font-weight:600">Sign in</a>
 </p>

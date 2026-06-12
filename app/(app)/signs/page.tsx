@@ -38,6 +38,26 @@ function firstStr(v: string | undefined): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
+// The signType dropdown's DISTINCT scan doesn't need to run on every list load —
+// the set of types changes only on import/edit, so memo it per server instance
+// with a short TTL. Worst case: a brand-new type takes up to 60s to appear in
+// the filter dropdown.
+let signTypesMemo: { value: string[]; expires: number } | null = null;
+
+async function getSignTypes(): Promise<string[]> {
+  if (signTypesMemo && Date.now() < signTypesMemo.expires) {
+    return signTypesMemo.value;
+  }
+  const rows = await prisma.sign.findMany({
+    distinct: ["signType"],
+    orderBy: { signType: "asc" },
+    select: { signType: true },
+  });
+  const value = rows.map((r) => r.signType).filter(Boolean);
+  signTypesMemo = { value, expires: Date.now() + 60_000 };
+  return value;
+}
+
 // Serialize the active filters back into a query string (used by the pager and
 // the per-row status forms so a status change returns to the same view).
 function filterQuery(f: {
@@ -90,7 +110,7 @@ export default async function SignsPage({
   // Build the Prisma filter from the active params (shared with CSV export).
   const where = buildSignWhere(f);
 
-  const [signs, total, zones, tags, typeRows] = await Promise.all([
+  const [signs, total, zones, tags, signTypes] = await Promise.all([
     prisma.sign.findMany({
       where,
       select: signRowSelect,
@@ -108,14 +128,9 @@ export default async function SignsPage({
       orderBy: { name: "asc" },
       select: { id: true, slug: true, name: true },
     }),
-    prisma.sign.findMany({
-      distinct: ["signType"],
-      orderBy: { signType: "asc" },
-      select: { signType: true },
-    }),
+    getSignTypes(),
   ]);
 
-  const signTypes = typeRows.map((r) => r.signType).filter(Boolean);
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const baseQuery = filterQuery(f);
   // Other active filters minus the search term — drives the live SearchField so a

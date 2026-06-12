@@ -43,9 +43,14 @@ export function figmaFileKey(raw: string): string | null {
 
 // Host allowlist for fetching a rendered image. The /v1/images endpoint returns
 // temporary CDN URLs (Figma's own host or its S3 bucket); pin the download to
-// https + a Figma/AWS host so a Figma-response-driven SSRF can't point the fetch at
-// an internal address. Pure (no network) so it's unit-testable. Used by
-// lib/figma-api.ts → fetchRenderedImage.
+// https + a Figma host so a Figma-response-driven SSRF can't point the fetch at
+// an internal address. The AWS branch is pinned to Figma's render bucket
+// (figma-alpha-api.s3.<region>.amazonaws.com, dot or dash region separator) —
+// a bare *.amazonaws.com suffix would allowlist any attacker-named S3 bucket.
+// Pure (no network) so it's unit-testable. Used by lib/figma-api.ts →
+// fetchRenderedImage.
+const FIGMA_S3_HOST = /^figma-alpha-api\.s3[.-][a-z0-9-]+\.amazonaws\.com$/;
+
 export function isAllowedImageHost(rawUrl: string): boolean {
   let url: URL;
   try {
@@ -58,6 +63,6 @@ export function isAllowedImageHost(rawUrl: string): boolean {
   return (
     host === "figma.com" ||
     host.endsWith(".figma.com") ||
-    host.endsWith(".amazonaws.com")
+    FIGMA_S3_HOST.test(host)
   );
 }

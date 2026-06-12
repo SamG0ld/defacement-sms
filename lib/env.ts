@@ -29,4 +29,14 @@ export function assertProdEnv(): void {
       `Missing required production environment variables: ${missing.join(", ")}`,
     );
   }
+  // AUTH_SECRET signs every session JWT — a guessable value forges sessions, so
+  // presence alone isn't enough: reject the .env.example placeholder and
+  // anything shorter than the 32 chars `openssl rand -base64 32` produces.
+  const secret = process.env.AUTH_SECRET ?? "";
+  if (secret === "change-me" || secret.length < 32) {
+    throw new Error(
+      "AUTH_SECRET is too weak for production (placeholder or under 32 chars). " +
+        "Generate one with: openssl rand -base64 32",
+    );
+  }
 }

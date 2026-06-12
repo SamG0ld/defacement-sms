@@ -33,8 +33,10 @@ export const crewId = z.number().int().positive();
 
 // Batch caps: generous enough for "claim a whole zone's stack" but bounded so a
 // single request can't blow the pool (lib/db.ts max:3) or the body limit.
+// MAX_DEPLOY_BATCH is exported for the client outbox drain, which chunks its
+// batched deploy POSTs to stay under the server's cap.
 const MAX_CLAIM_BATCH = 500;
-const MAX_DEPLOY_BATCH = 200;
+export const MAX_DEPLOY_BATCH = 200;
 
 // ── Crews ───────────────────────────────────────────────────────────────────
 
@@ -245,4 +247,17 @@ export type SetSignStatusResponse = {
   signId: number;
   status: SignStatusValue;
   result: SetSignStatusResult;
+};
+
+// Batch wrapper for the /signs offline-queue drain — one POST per reconnect
+// instead of one per queued change. Results echo each change's clientId so the
+// client can resolve its outbox entries individually.
+export const MAX_STATUS_BATCH = 200;
+export const setSignStatusBatchSchema = z.object({
+  changes: z.array(setSignStatusSchema).min(1).max(MAX_STATUS_BATCH),
+});
+export type SetSignStatusBatchInput = z.infer<typeof setSignStatusBatchSchema>;
+
+export type SetSignStatusBatchResponse = {
+  results: (SetSignStatusResponse & { clientId: string })[];
 };

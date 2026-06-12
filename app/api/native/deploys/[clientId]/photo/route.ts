@@ -9,10 +9,15 @@ import { uploadDeployPhoto, streamDeployPhoto } from "@/lib/deploy/blob";
 import { attachDeployPhoto } from "@/lib/deploy/service";
 import { prisma } from "@/lib/db";
 
+// Blob upload + DB writes — bound the worst case.
+export const maxDuration = 30;
+
 const IMAGE_ERROR: Record<string, string> = {
   empty: "Photo is empty.",
   too_large: "Photo is too large (max 10 MB).",
   unsupported_type: "Unsupported image type — PNG, JPEG, or WebP only.",
+  bad_dimensions: "Couldn't read the photo's dimensions — the file may be corrupt.",
+  too_many_pixels: "Photo resolution is too large (max 40 megapixels).",
 };
 
 // POST /api/native/deploys/[clientId]/photo — attach a deploy photo. Body is the
@@ -25,7 +30,7 @@ export async function POST(
   { params }: { params: Promise<{ clientId: string }> },
 ): Promise<Response> {
   const { clientId } = await params;
-  return runApi(async () => {
+  return runApi(req, async () => {
     await requireApiSession();
 
     // Cheap reject before allocating the body: a hostile multi-GB upload must not

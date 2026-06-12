@@ -14,11 +14,13 @@ import {
 } from "@/lib/figma-api";
 import { flattenFigmaNodes, matchNodesToSigns } from "@/lib/figma-match";
 import { validateImageUpload } from "@/lib/image-upload";
+import { checkActionRateLimit } from "@/lib/ratelimit";
 import { requireRole } from "@/lib/rbac";
 
 import { stampsForStatus } from "./_lib";
 import {
   CHUNK,
+  assertMutateBudget,
   auditBulk,
   chunk,
   fail,
@@ -38,6 +40,7 @@ import {
 export async function generateSelection(formData: FormData): Promise<void> {
   const session = await requireRole("lead");
   const returnTo = safeReturnTo(formData);
+  await assertMutateBudget(session, returnTo);
   const target = readTarget(formData, returnTo);
 
   // Every selected sign joins the batch; a StatusHistory row is recorded only
@@ -69,17 +72,18 @@ export async function generateSelection(formData: FormData): Promise<void> {
         });
         batchId = batch.id;
 
-        // Re-read statuses INSIDE the tx rather than trusting the pre-tx
-        // resolveRows snapshot: two leads generating overlapping selections at
-        // once would otherwise each write a duplicate "→ generated" history row
-        // off the same stale read. Only signs not already generated move.
+        // Lock + re-read statuses INSIDE the tx (FOR UPDATE, ordered by id so
+        // overlapping selections can't deadlock): under READ COMMITTED a plain
+        // re-read still races — two leads generating overlapping selections
+        // could both read a sign as not-yet-generated before either commits and
+        // each write a duplicate "→ generated" history row. The row locks
+        // serialize the transactions, so `moving` (and the history's oldStatus)
+        // reflect committed truth. Only signs not already generated move.
+        const ids = rows.map((r) => r.id);
+        const locked = await tx.$queryRaw<{ id: number; status: string }[]>`
+          SELECT id, status FROM signs WHERE id = ANY(${ids}) ORDER BY id FOR UPDATE`;
         const currentStatus = new Map(
-          (
-            await tx.sign.findMany({
-              where: { id: { in: rows.map((r) => r.id) } },
-              select: { id: true, status: true },
-            })
-          ).map((s) => [s.id, s.status] as const),
+          locked.map((s) => [s.id, s.status] as const),
         );
 
         for (const part of chunk(rows, CHUNK)) {
@@ -171,6 +175,17 @@ export async function updateBatchFigmaUrl(
 export async function importBatchPreviews(batchId: number): Promise<void> {
   const session = await requireRole("lead");
   const back = `/signs/generate/${batchId}`;
+
+  // Each call fans out one Figma fetch per matched sign — rate-limit per actor
+  // like the CSV import/export pipeline (lead-gated is not a throttle).
+  const { success } = await checkActionRateLimit(
+    `figma-import:${session.user.id}`,
+  );
+  if (!success) {
+    redirect(
+      `${back}?error=${encodeURIComponent("Too many imports — wait a minute and try again.")}`,
+    );
+  }
 
   const batch = await prisma.generationBatch.findUnique({
     where: { id: batchId },

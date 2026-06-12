@@ -141,12 +141,25 @@ describe("matchNodesToSigns", () => {
 });
 
 describe("isAllowedImageHost (SSRF guard)", () => {
-  it("allows https Figma + AWS hosts", () => {
+  it("allows https Figma hosts + Figma's S3 render bucket", () => {
     expect(isAllowedImageHost("https://www.figma.com/x.png")).toBe(true);
     expect(
       isAllowedImageHost("https://figma-alpha-api.s3.us-west-2.amazonaws.com/x"),
     ).toBe(true);
+    expect(
+      isAllowedImageHost("https://figma-alpha-api.s3-us-west-2.amazonaws.com/x"),
+    ).toBe(true);
     expect(isAllowedImageHost("https://s3-alpha.figma.com/img/y")).toBe(true);
+  });
+
+  it("rejects non-Figma AWS buckets (allowlist is the bucket, not *.amazonaws.com)", () => {
+    expect(
+      isAllowedImageHost("https://attacker-bucket.s3.us-east-1.amazonaws.com/x"),
+    ).toBe(false);
+    expect(isAllowedImageHost("https://s3.amazonaws.com/figma-alpha-api/x")).toBe(false);
+    expect(
+      isAllowedImageHost("https://figma-alpha-api.evil.amazonaws.com.evil.com/x"),
+    ).toBe(false);
   });
 
   it("rejects non-https, foreign hosts, and garbage", () => {

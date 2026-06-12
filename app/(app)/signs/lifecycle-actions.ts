@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 
 import { prisma } from "@/lib/db";
+import { checkMutationRateLimit } from "@/lib/ratelimit";
 import { requireSession } from "@/lib/rbac";
 import { validateImageUpload } from "@/lib/image-upload";
 import { uploadSignPhoto, type SignPhotoKind } from "@/lib/sign-photos";
@@ -30,12 +31,26 @@ function failDetail(signId: number, message: string): never {
   redirect(`/signs/${signId}?error=${encodeURIComponent(message)}`);
 }
 
+// Generous per-actor backstop (60/min) — these actions are open to every
+// active user, so a role gate alone is not a throttle.
+async function assertMutateBudget(
+  signId: number,
+  userId: string,
+): Promise<void> {
+  const budget = await checkMutationRateLimit(userId);
+  if (!budget.success) {
+    failDetail(signId, "Too many changes at once — wait a minute and try again.");
+  }
+}
+
 function photoErrorMessage(error: string): string {
   switch (error) {
     case "too_large":
       return "Photo is too large (max 10 MB).";
     case "unsupported_type":
       return "Photo must be a PNG, JPEG, or WebP image.";
+    case "too_many_pixels":
+      return "Photo resolution is too large (max 40 megapixels).";
     default:
       return "Photo could not be read.";
   }
@@ -99,6 +114,7 @@ export async function recordDelivery(
   formData: FormData,
 ): Promise<void> {
   const session = await requireSession();
+  await assertMutateBudget(signId, session.user.id);
 
   const sign = await loadExternalSign(signId);
   // Don't let a back-button / double-submit re-record an earlier step after the
@@ -177,6 +193,7 @@ export async function recordHandoff(
   formData: FormData,
 ): Promise<void> {
   const session = await requireSession();
+  await assertMutateBudget(signId, session.user.id);
 
   const sign = await loadExternalSign(signId);
   // Same backward-overwrite guard as recordDelivery: once installed, the handoff
@@ -237,8 +254,15 @@ export async function confirmInstalled(
   formData: FormData,
 ): Promise<void> {
   const session = await requireSession();
+  await assertMutateBudget(signId, session.user.id);
 
   const sign = await loadExternalSign(signId);
+  // Same re-POST guard as the sibling lifecycle steps: a duplicate confirm
+  // would overwrite the install stamps/notes/photo and write a noise history
+  // row for a transition that never happened.
+  if (sign.status === "installed") {
+    failDetail(signId, "This item is already confirmed installed.");
+  }
 
   const extra = optNotes(formData, 2000);
 

@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vitest/config";
 
 // Two projects:
@@ -6,7 +8,17 @@ import { defineConfig } from "vitest/config";
 //    DATABASE_URL and runs serially. Invoked explicitly (`npm run test:integration`).
 // The `@/*` -> `./*` path alias from tsconfig.json is resolved natively by Vite.
 export default defineConfig({
-  resolve: { tsconfigPaths: true },
+  resolve: {
+    tsconfigPaths: true,
+    // The real `server-only` package throws on import outside a server bundle, so
+    // alias it to a no-op for the node test envs (server modules like
+    // lib/figma-api.ts are pulled in via the generate Server Actions).
+    alias: {
+      "server-only": fileURLToPath(
+        new URL("./tests/stubs/server-only.ts", import.meta.url),
+      ),
+    },
+  },
   test: {
     projects: [
       {

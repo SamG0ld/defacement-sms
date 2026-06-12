@@ -4,6 +4,7 @@ import { formatDateTime } from "../../signs/_lib";
 
 export type DeployRow = {
   id: number;
+  clientId: string;
   signId: number;
   status: string; // "applied" | "conflict"
   deployedByEmail: string | null;
@@ -74,8 +75,11 @@ export function DeployTable({ rows }: { rows: DeployRow[] }) {
                   {r.status}
                 </span>
                 {r.hasPhoto ? (
+                  // THIS event's photo (keyed by clientId), not the sign's
+                  // current photo — a later deploy of the same sign must not
+                  // rewrite what this after-action row shows.
                   <Link
-                    href={`/api/native/photos/sign/${r.signId}`}
+                    href={`/api/native/deploys/${r.clientId}/photo`}
                     className="ml-2 text-accent hover:underline"
                     target="_blank"
                     rel="noreferrer"

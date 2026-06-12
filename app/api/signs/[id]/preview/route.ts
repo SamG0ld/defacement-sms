@@ -18,6 +18,8 @@ const IMAGE_ERROR: Record<string, string> = {
   empty: "Image is empty.",
   too_large: "Image is too large (max 10 MB).",
   unsupported_type: "Unsupported image type — PNG, JPEG, or WebP only.",
+  bad_dimensions: "Couldn't read the image's dimensions — the file may be corrupt.",
+  too_many_pixels: "Image resolution is too large (max 40 megapixels).",
 };
 
 // Map an rbac AuthorizationError to an HTTP status: 401 when unauthenticated,

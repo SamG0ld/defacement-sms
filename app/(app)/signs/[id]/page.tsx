@@ -88,7 +88,10 @@ export default async function SignDetailPage({
       zone: true,
       location: { include: { zone: true, floorMap: { select: { key: true } } } },
       tagAssignments: { include: { tag: true } },
-      statusHistory: { orderBy: { changedAt: "desc" } },
+      // Newest 50 only — a long-lived sign can accumulate hundreds of rows and
+      // this page renders on every detail view. The timeline notes when older
+      // entries were cut off.
+      statusHistory: { orderBy: { changedAt: "desc" }, take: 50 },
       generationBatch: { select: { id: true, label: true } },
     },
   });
@@ -325,6 +328,12 @@ export default async function SignDetailPage({
                 )}
               </li>
             ))}
+            {sign.statusHistory.length === 50 && (
+              <li className="border-l-2 border-zinc-800 pl-3 text-xs text-zinc-500">
+                Showing the latest 50 changes — older history is retained but
+                not displayed.
+              </li>
+            )}
           </ol>
         )}
       </section>

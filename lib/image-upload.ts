@@ -11,16 +11,24 @@
 // while still bounding what a single request can push into the DB.
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
 
+// Decoded-size ceiling (decompression-bomb guard). The byte cap alone still
+// admits a highly-compressed PNG/WebP that decodes to gigabytes of RGBA in
+// every viewer's <img> tab. 40M px (~8K x 5K) is ~160 MB decoded — generous
+// for any real floor map or deploy photo, cheap to enforce from the header.
+export const MAX_IMAGE_PIXELS = 40_000_000;
+
 export type SniffedImage = {
   contentType: "image/png" | "image/jpeg" | "image/webp";
-  width: number | null; // advisory only (pins are percentages); null if unparsed
-  height: number | null;
+  width: number;
+  height: number;
 };
 
 export type ImageValidationError =
   | "empty"
   | "too_large"
-  | "unsupported_type";
+  | "unsupported_type"
+  | "bad_dimensions"
+  | "too_many_pixels";
 
 export type ImageValidationResult =
   | { ok: true; image: SniffedImage }
@@ -54,6 +62,12 @@ function u16be(b: Uint8Array, off: number): number {
 }
 function u32be(b: Uint8Array, off: number): number {
   return (b[off] * 0x1000000) + (b[off + 1] << 16) + (b[off + 2] << 8) + b[off + 3];
+}
+function u16le(b: Uint8Array, off: number): number {
+  return b[off] | (b[off + 1] << 8);
+}
+function u24le(b: Uint8Array, off: number): number {
+  return b[off] | (b[off + 1] << 8) | (b[off + 2] << 16);
 }
 
 function pngDimensions(b: Uint8Array): { width: number | null; height: number | null } {
@@ -92,22 +106,67 @@ function jpegDimensions(b: Uint8Array): { width: number | null; height: number |
   return { width: null, height: null };
 }
 
+// WebP dimensions, by form chunk (payload starts at byte 20, after the RIFF
+// header and the chunk's FourCC + size):
+//   VP8  (lossy):    3-byte frame tag, start code 9D 01 2A, then 14-bit LE
+//                    width/height at +6 / +8.
+//   VP8L (lossless): 0x2F signature byte, then width-1 / height-1 packed as
+//                    14+14 bits little-endian.
+//   VP8X (extended): flags + reserved (4 bytes), then 24-bit LE canvas
+//                    width-1 / height-1.
+function webpDimensions(b: Uint8Array): { width: number | null; height: number | null } {
+  const fourcc = String.fromCharCode(b[12], b[13], b[14], b[15]);
+  if (fourcc === "VP8 ") {
+    if (b.length < 30 || b[23] !== 0x9d || b[24] !== 0x01 || b[25] !== 0x2a) {
+      return { width: null, height: null };
+    }
+    return { width: u16le(b, 26) & 0x3fff, height: u16le(b, 28) & 0x3fff };
+  }
+  if (fourcc === "VP8L") {
+    if (b.length < 25 || b[20] !== 0x2f) return { width: null, height: null };
+    const bits =
+      b[21] | (b[22] << 8) | (b[23] << 16) | ((b[24] & 0x0f) << 24);
+    return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+  }
+  if (fourcc === "VP8X") {
+    if (b.length < 30) return { width: null, height: null };
+    return { width: u24le(b, 24) + 1, height: u24le(b, 27) + 1 };
+  }
+  return { width: null, height: null };
+}
+
 // Validate an uploaded image's bytes. Returns the sniffed (trusted) content type
-// + advisory dimensions, or a specific error code the caller maps to a message.
+// + parsed dimensions, or a specific error code the caller maps to a message.
+// Dimensions are enforced, not advisory: an allowlisted type whose header won't
+// yield them is malformed/truncated and gets rejected, and the pixel ceiling
+// bounds what every viewer's <img> must decode.
 export function validateImageUpload(bytes: Uint8Array): ImageValidationResult {
   if (bytes.length === 0) return { ok: false, error: "empty" };
   if (bytes.length > MAX_IMAGE_BYTES) return { ok: false, error: "too_large" };
 
+  let contentType: SniffedImage["contentType"];
+  let dims: { width: number | null; height: number | null };
   if (isPng(bytes)) {
-    return { ok: true, image: { contentType: "image/png", ...pngDimensions(bytes) } };
+    contentType = "image/png";
+    dims = pngDimensions(bytes);
+  } else if (isJpeg(bytes)) {
+    contentType = "image/jpeg";
+    dims = jpegDimensions(bytes);
+  } else if (isWebp(bytes)) {
+    contentType = "image/webp";
+    dims = webpDimensions(bytes);
+  } else {
+    return { ok: false, error: "unsupported_type" };
   }
-  if (isJpeg(bytes)) {
-    return { ok: true, image: { contentType: "image/jpeg", ...jpegDimensions(bytes) } };
+
+  if (!dims.width || !dims.height || dims.width <= 0 || dims.height <= 0) {
+    return { ok: false, error: "bad_dimensions" };
   }
-  if (isWebp(bytes)) {
-    // WebP dimensions live in a variable VP8/VP8L/VP8X header; advisory only, so
-    // we don't parse them. The map renders fine without stored dimensions.
-    return { ok: true, image: { contentType: "image/webp", width: null, height: null } };
+  if (dims.width * dims.height > MAX_IMAGE_PIXELS) {
+    return { ok: false, error: "too_many_pixels" };
   }
-  return { ok: false, error: "unsupported_type" };
+  return {
+    ok: true,
+    image: { contentType, width: dims.width, height: dims.height },
+  };
 }

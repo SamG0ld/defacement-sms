@@ -7,6 +7,8 @@
 //     (4xx → dead-letter) vs transient (429/5xx/401 → retry).
 
 import type {
+  SetSignStatusBatchInput,
+  SetSignStatusBatchResponse,
   SetSignStatusInput,
   SetSignStatusResponse,
 } from "@/lib/deploy/contract";
@@ -60,6 +62,17 @@ export function postSignStatus(
   body: SetSignStatusInput,
 ): Promise<SetSignStatusResponse> {
   return request<SetSignStatusResponse>("/api/native/sign-status", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+// Whole-queue drain in one request; results echo each change's clientId.
+export function postSignStatusBatch(
+  body: SetSignStatusBatchInput,
+): Promise<SetSignStatusBatchResponse> {
+  return request<SetSignStatusBatchResponse>("/api/native/sign-status/batch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

@@ -25,6 +25,8 @@ import type {
   DeploySignView,
   ReleaseRequest,
   ReleaseResponse,
+  SetSignStatusBatchInput,
+  SetSignStatusBatchResponse,
   SetSignStatusInput,
   SetSignStatusResponse,
 } from "@/lib/deploy/contract";
@@ -141,15 +143,19 @@ export async function leaveCrew(crewId: number, actor: ApiActor): Promise<void> 
 }
 
 async function assertMember(crewId: number, actor: ApiActor): Promise<void> {
-  const crew = await prisma.crew.findUnique({
-    where: { id: crewId },
-    select: { isActive: true },
-  });
+  // Independent lookups — one round-trip of latency, not two (this runs on
+  // every claim/release).
+  const [crew, member] = await Promise.all([
+    prisma.crew.findUnique({
+      where: { id: crewId },
+      select: { isActive: true },
+    }),
+    prisma.crewMember.findUnique({
+      where: { crewId_userId: { crewId, userId: actor.userId } },
+      select: { userId: true },
+    }),
+  ]);
   if (!crew || !crew.isActive) throw new ApiError(404, "crew not found");
-  const member = await prisma.crewMember.findUnique({
-    where: { crewId_userId: { crewId, userId: actor.userId } },
-    select: { userId: true },
-  });
   if (!member) throw new ApiError(403, "not a member of this crew");
 }
 
@@ -262,11 +268,19 @@ export async function applyDeploys(
   const events = req.events;
   const clientIds = events.map((e) => e.clientId);
   const signIds = [...new Set(events.map((e) => e.signId))];
+  // crewId is client-supplied attribution. Verify the actor actually belongs to
+  // every crew they attribute a deploy to (AR-1) so the after-action log can't
+  // be stamped with someone else's crew label — batched into one query.
+  const crewIds = [
+    ...new Set(
+      events.map((e) => e.crewId).filter((c): c is number => c != null),
+    ),
+  ];
 
   // Reads outside the transaction; idempotency (clientId @unique) + the
   // status-guarded update inside the tx make the classify→write safe under
   // concurrent identical batches.
-  const [existing, signRows] = await Promise.all([
+  const [existing, signRows, memberships] = await Promise.all([
     prisma.deployEvent.findMany({
       where: { clientId: { in: clientIds } },
       select: { clientId: true },
@@ -275,9 +289,20 @@ export async function applyDeploys(
       where: { id: { in: signIds } },
       select: { id: true, status: true },
     }),
+    crewIds.length > 0
+      ? prisma.crewMember.findMany({
+          where: { userId: actor.userId, crewId: { in: crewIds } },
+          select: { crewId: true },
+        })
+      : Promise.resolve([]),
   ]);
 
   const existingClientIds = new Set(existing.map((e) => e.clientId));
+  // Crews the actor is a verified member of. An unverified crewId is dropped to
+  // null when the event is persisted (below) — the deploy still lands, so a
+  // stale/forged label degrades availability-safely instead of blocking a
+  // floor deploy.
+  const memberCrewIds = new Set(memberships.map((m) => m.crewId));
   const statusById = new Map(signRows.map((s) => [s.id, s.status as string]));
   const deployedSignIds = new Set(
     signRows.filter((s) => s.status === "deployed").map((s) => s.id),
@@ -335,9 +360,11 @@ export async function applyDeploys(
     const eventRows = [...toApply, ...toLogConflict].map((e) => ({
       clientId: e.clientId,
       signId: e.signId,
-      // crewId is advisory attribution only — NOT membership-checked here (any
-      // active user may deploy; the field exists for the after-action log).
-      crewId: e.crewId ?? null,
+      // crewId is advisory attribution for the after-action log. Persist it
+      // only when the actor is a verified member of that crew (AR-1); an
+      // unverified/forged label is dropped to null rather than blocking the
+      // deploy.
+      crewId: e.crewId != null && memberCrewIds.has(e.crewId) ? e.crewId : null,
       deployedByUserId: actor.userId,
       deployedByEmail: actor.email,
       deployedAt: e.deployedAt,
@@ -468,6 +495,22 @@ export async function setSignStatus(
   return { signId: req.signId, status: req.status, result: "applied" };
 }
 
+// Batch counterpart to setSignStatus for the offline-queue drain: applies the
+// changes sequentially (the queue is FIFO — order matters under
+// last-writer-wins) and echoes per-change results keyed by clientId. Each
+// change keeps setSignStatus's own idempotency/transaction semantics.
+export async function setSignStatusBatch(
+  req: SetSignStatusBatchInput,
+  actor: ApiActor,
+): Promise<SetSignStatusBatchResponse> {
+  const results: SetSignStatusBatchResponse["results"] = [];
+  for (const change of req.changes) {
+    const result = await setSignStatus(change, actor);
+    results.push({ clientId: change.clientId, ...result });
+  }
+  return { results };
+}
+
 // Patch the deploy photo (a private Blob pathname, stored server-side only) onto
 // its DeployEvent + cache it on the Sign for cheap list/map rendering. Called by
 // the photo upload route after the Blob upload succeeds. Returns the signId so
@@ -512,6 +555,10 @@ export async function bootstrap(actor: ApiActor): Promise<BootstrapResponse> {
     prisma.sign.findMany({
       where: { status: { in: WORKING_STATUSES } },
       select: SIGN_VIEW_SELECT,
+      // Defensive ceiling only — the real working set is a few hundred signs.
+      // Bounds what one bootstrap call can pull through the max:3 pool if the
+      // table ever balloons; far above any legitimate con's inventory.
+      take: 5000,
     }),
   ]);
 

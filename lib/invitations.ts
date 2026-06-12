@@ -1,5 +1,11 @@
 import { randomBytes, createHash, timingSafeEqual } from "crypto";
 
+// ⚠ NOT YET WIRED — parked for the invitation flow (see README roadmap).
+// Nothing under app/ calls these helpers yet, which means the security
+// properties they imply (token expiry, single-use) are NOT enforced anywhere.
+// Don't cite this file as evidence the invitation flow is protected until a
+// caller actually lands.
+
 // 32 random bytes encoded as base64url ≈ 43 chars, ~256 bits of entropy.
 // Plenty for a one-time invitation link.
 const TOKEN_BYTES = 32;

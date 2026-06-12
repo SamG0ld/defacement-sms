@@ -13,6 +13,7 @@ import {
 import {
   CHUNK,
   type BulkTarget,
+  assertMutateBudget,
   auditBulk,
   chunk,
   done,
@@ -40,6 +41,7 @@ import {
 export async function bulkSetStatus(formData: FormData): Promise<void> {
   const session = await requireSession();
   const returnTo = safeReturnTo(formData);
+  await assertMutateBudget(session, returnTo);
 
   // Namespaced "setStatus" (not "status") so it never collides with the "status"
   // filter key when the selection is "all matching the current filter".
@@ -94,6 +96,7 @@ export async function bulkSetHardwareCollected(
 ): Promise<void> {
   const session = await requireSession();
   const returnTo = safeReturnTo(formData);
+  await assertMutateBudget(session, returnTo);
   const target = readTarget(formData, returnTo);
   const collected = formData.get("collected") === "1";
 
@@ -114,6 +117,7 @@ export async function bulkSetHardwareCollected(
 export async function bulkSetZone(formData: FormData): Promise<void> {
   const session = await requireRole("lead");
   const returnTo = safeReturnTo(formData);
+  await assertMutateBudget(session, returnTo);
   const target = readTarget(formData, returnTo);
 
   const zoneId = Number(formData.get("zoneId"));
@@ -136,6 +140,7 @@ export async function bulkSetZone(formData: FormData): Promise<void> {
 export async function bulkSetSlot(formData: FormData): Promise<void> {
   const session = await requireRole("lead");
   const returnTo = safeReturnTo(formData);
+  await assertMutateBudget(session, returnTo);
   const target = readTarget(formData, returnTo);
 
   // Namespaced "setSlot" (not "slot") to avoid the "slot" filter-key collision.
@@ -160,6 +165,7 @@ export async function bulkSetSlot(formData: FormData): Promise<void> {
 export async function bulkAddTag(formData: FormData): Promise<void> {
   const session = await requireRole("lead");
   const returnTo = safeReturnTo(formData);
+  await assertMutateBudget(session, returnTo);
   const target = readTarget(formData, returnTo);
   const tagId = await readTagId(formData, returnTo);
 
@@ -179,6 +185,7 @@ export async function bulkAddTag(formData: FormData): Promise<void> {
 export async function bulkRemoveTag(formData: FormData): Promise<void> {
   const session = await requireRole("lead");
   const returnTo = safeReturnTo(formData);
+  await assertMutateBudget(session, returnTo);
   const target = readTarget(formData, returnTo);
   const tagId = await readTagId(formData, returnTo);
 
@@ -202,6 +209,7 @@ export async function bulkRemoveTag(formData: FormData): Promise<void> {
 export async function bulkDelete(formData: FormData): Promise<void> {
   const session = await requireRole("lead");
   const returnTo = safeReturnTo(formData);
+  await assertMutateBudget(session, returnTo);
   const target = readTarget(formData, returnTo);
 
   // Cascade (schema onDelete) clears status_history + tag assignments.

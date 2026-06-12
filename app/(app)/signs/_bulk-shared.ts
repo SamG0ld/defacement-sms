@@ -10,6 +10,7 @@ import { redirect } from "next/navigation";
 
 import { recordAudit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
+import { checkMutationRateLimit } from "@/lib/ratelimit";
 import type { Prisma, SignStatus } from "@/app/generated/prisma/client";
 
 import { buildSignWhere, type SignFilters } from "./_lib";
@@ -113,6 +114,19 @@ export function safeReturnTo(fd: FormData): string {
 export function fail(returnTo: string, message: string): never {
   const sep = returnTo.includes("?") ? "&" : "?";
   redirect(`${returnTo}${sep}error=${encodeURIComponent(message)}`);
+}
+
+// Per-actor backstop on the mutating actions — a role gate is not a throttle,
+// and every write path here fans out to chunked updateMany/createMany against
+// the max:3 pool. Fails open when Upstash is unconfigured (dev) or down.
+export async function assertMutateBudget(
+  session: { user: { id: string } },
+  returnTo: string,
+): Promise<void> {
+  const { success } = await checkMutationRateLimit(session.user.id);
+  if (!success) {
+    fail(returnTo, "Too many changes at once — wait a minute and try again.");
+  }
 }
 
 export function done(returnTo: string): never {

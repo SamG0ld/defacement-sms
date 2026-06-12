@@ -31,38 +31,86 @@ const actionLimiter = redis
     })
   : null;
 
+// Per-actor backstop for the /api/native/* surface (offline sync drains, claims,
+// photo serve). Generous — real floor cadence never approaches this; the point
+// is stopping a hot-looped client from monopolizing the max:3 pg pool.
+const nativeLimiter = redis
+  ? new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(300, "1 m"),
+      analytics: true,
+      prefix: "ratelimit:native",
+    })
+  : null;
+
+// Per-actor backstop for the authenticated mutating Server Actions (generate,
+// bulk zone/tag/delete, status, lifecycle). Roomier than the import/export
+// bucket — 60/min is ~1 write per second sustained, beyond any hand-driven
+// usage but a wall for a scripted hot loop.
+const mutationLimiter = redis
+  ? new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(60, "1 m"),
+      analytics: true,
+      prefix: "ratelimit:mutate",
+    })
+  : null;
+
 export type RateLimitResult = {
   success: boolean;
   remaining: number;
   reset: number;
 };
 
+const OPEN: RateLimitResult = {
+  success: true,
+  remaining: Number.POSITIVE_INFINITY,
+  reset: 0,
+};
+
+// The limiter is a best-effort backstop, so it fails OPEN: an Upstash outage or
+// network blip must degrade to "no throttling", never take down login or the
+// floor sync with it.
+async function safeLimit(
+  limiter: Ratelimit | null,
+  key: string,
+): Promise<RateLimitResult> {
+  if (!limiter) return OPEN;
+  try {
+    const result = await limiter.limit(key);
+    return {
+      success: result.success,
+      remaining: result.remaining,
+      reset: result.reset,
+    };
+  } catch (err) {
+    console.error("rate limiter unavailable, failing open", err);
+    return OPEN;
+  }
+}
+
 export async function checkAuthRateLimit(
   ip: string,
 ): Promise<RateLimitResult> {
-  if (!authLimiter) {
-    return { success: true, remaining: Number.POSITIVE_INFINITY, reset: 0 };
-  }
-  const result = await authLimiter.limit(`auth:${ip}`);
-  return {
-    success: result.success,
-    remaining: result.remaining,
-    reset: result.reset,
-  };
+  return safeLimit(authLimiter, `auth:${ip}`);
 }
 
 export async function checkActionRateLimit(
   key: string,
 ): Promise<RateLimitResult> {
-  if (!actionLimiter) {
-    return { success: true, remaining: Number.POSITIVE_INFINITY, reset: 0 };
-  }
-  const result = await actionLimiter.limit(key);
-  return {
-    success: result.success,
-    remaining: result.remaining,
-    reset: result.reset,
-  };
+  return safeLimit(actionLimiter, key);
+}
+
+export async function checkNativeRateLimit(
+  userId: string,
+): Promise<RateLimitResult> {
+  return safeLimit(nativeLimiter, `native:${userId}`);
+}
+
+export async function checkMutationRateLimit(
+  userId: string,
+): Promise<RateLimitResult> {
+  return safeLimit(mutationLimiter, `mutate:${userId}`);
 }
 
 export function isRateLimitConfigured(): boolean {

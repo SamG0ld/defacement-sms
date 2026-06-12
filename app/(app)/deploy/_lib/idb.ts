@@ -31,8 +31,56 @@ function openDb(): Promise<IDBDatabase> {
         db.createObjectStore(PHOTOS);
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // The browser (iOS Safari especially) may close an idle connection out
+      // from under us — drop the singleton so the next op re-opens.
+      db.onclose = () => {
+        dbPromise = null;
+      };
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
+  });
+}
+
+// One connection per page session instead of an open/close cycle per operation
+// (a drain used to cost ~3N+1 cycles — expensive on iOS Safari). A failed open
+// clears the singleton so the next op retries. The connection is only valid for
+// the factory that created it, so a changed global re-opens (never happens in a
+// browser; the unit tests swap in a fresh fake-indexeddb factory per test).
+let dbPromise: Promise<IDBDatabase> | null = null;
+let dbFactory: IDBFactory | null = null;
+
+function getDb(): Promise<IDBDatabase> {
+  if (!dbPromise || dbFactory !== globalThis.indexedDB) {
+    dbFactory = globalThis.indexedDB;
+    const opened = openDb();
+    opened.catch(() => {
+      if (dbPromise === opened) dbPromise = null;
+    });
+    dbPromise = opened;
+  }
+  return dbPromise;
+}
+
+function runTx<T>(
+  db: IDBDatabase,
+  store: string,
+  mode: IDBTransactionMode,
+  run: (s: IDBObjectStore) => IDBRequest<T>,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = db.transaction(store, mode);
+    const req = run(t.objectStore(store));
+    // Capture the result during the request's success event — `req.result` is
+    // only spec-guaranteed valid there, not after the transaction completes.
+    let result: T;
+    req.onsuccess = () => {
+      result = req.result;
+    };
+    t.oncomplete = () => resolve(result);
+    t.onerror = () => reject(t.error);
   });
 }
 
@@ -41,21 +89,16 @@ function tx<T>(
   mode: IDBTransactionMode,
   run: (s: IDBObjectStore) => IDBRequest<T>,
 ): Promise<T> {
-  return openDb().then(
-    (db) =>
-      new Promise<T>((resolve, reject) => {
-        const t = db.transaction(store, mode);
-        const req = run(t.objectStore(store));
-        t.oncomplete = () => {
-          db.close();
-          resolve(req.result);
-        };
-        t.onerror = () => {
-          db.close();
-          reject(t.error);
-        };
-      }),
-  );
+  return getDb().then((db) => {
+    try {
+      return runTx(db, store, mode, run);
+    } catch {
+      // transaction() throws synchronously on a connection the browser already
+      // closed — re-open once and retry.
+      dbPromise = null;
+      return getDb().then((fresh) => runTx(fresh, store, mode, run));
+    }
+  });
 }
 
 // ── Outbox ────────────────────────────────────────────────────────────────────

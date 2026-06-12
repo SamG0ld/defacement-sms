@@ -55,6 +55,7 @@ export default async function ActivityPage({ searchParams }: ActivityPageProps) 
   } else if (view === "deploy") {
     let events: {
       id: number;
+      clientId: string;
       signId: number;
       status: string;
       deployedByEmail: string | null;
@@ -70,6 +71,7 @@ export default async function ActivityPage({ searchParams }: ActivityPageProps) 
         take: PAGE_SIZE,
         select: {
           id: true,
+          clientId: true,
           signId: true,
           status: true,
           deployedByEmail: true,
@@ -92,6 +94,7 @@ export default async function ActivityPage({ searchParams }: ActivityPageProps) 
     const signById = new Map(signs.map((s) => [s.id, s]));
     deployRows = events.map((e) => ({
       id: e.id,
+      clientId: e.clientId,
       signId: e.signId,
       status: e.status,
       deployedByEmail: e.deployedByEmail,

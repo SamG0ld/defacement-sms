@@ -228,6 +228,23 @@ describe("confirmInstalled", () => {
     const after = await prisma.sign.findUnique({ where: { id: s.id } });
     expect(after?.installPhotoUrl).toBe("sign-photos/fake-blob.png");
   });
+
+  it("refuses a duplicate confirm — stamps survive, no noise history row", async () => {
+    const s = await seedExternal({
+      status: "installed",
+      installedBy: "earlier@example.com",
+      installNotes: "original install note",
+    });
+    const url = await captureRedirect(
+      confirmInstalled(s.id, fd({ notes: "second confirm" })),
+    );
+    expect(url).toContain("error=");
+    const after = await prisma.sign.findUnique({ where: { id: s.id } });
+    expect(after?.installedBy).toBe("earlier@example.com");
+    expect(after?.installNotes).toBe("original install note");
+    const hist = await prisma.statusHistory.findMany({ where: { signId: s.id } });
+    expect(hist).toHaveLength(0);
+  });
 });
 
 describe("external-category guard", () => {

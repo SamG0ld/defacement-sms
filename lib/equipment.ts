@@ -136,7 +136,8 @@ export const SIGN_MATERIAL_TYPE_NAMES = [
 export function signMaterialCountsFromSummary(
   summary: PrintSummary,
 ): Record<string, number> {
-  const bucket = (key: string) => summary.materials.find((m) => m.key === key);
+  const byKey = new Map(summary.materials.map((m) => [m.key, m]));
+  const bucket = (key: string) => byKey.get(key);
   return {
     "Signs 22x28": bucket("22x28")?.total ?? 0,
     "Signs 24x36": bucket("24x36")?.total ?? 0,

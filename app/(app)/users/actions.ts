@@ -129,7 +129,10 @@ export async function setUserRole(
   try {
     target = await prisma.user.update({
       where: { id: userId },
-      data: { role: parsed.data },
+      // Any role change bumps tokenVersion so a live session can't ride a
+      // now-revoked tier — same kill-switch the deactivation path uses. Takes
+      // effect at the session's next JWT refresh.
+      data: { role: parsed.data, tokenVersion: { increment: 1 } },
       select: { email: true },
     });
   } catch (err) {

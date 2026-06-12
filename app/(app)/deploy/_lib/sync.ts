@@ -14,7 +14,7 @@ import {
   postRelease,
 } from "./api";
 import { allEntries, deleteEntry, deletePhoto, getPhoto, putEntry } from "./idb";
-import type { ClaimRejection } from "@/lib/deploy/contract";
+import { MAX_DEPLOY_BATCH, type ClaimRejection } from "@/lib/deploy/contract";
 import type {
   ClaimPayload,
   DeployPayload,
@@ -128,8 +128,77 @@ async function processEntry(
   }
 }
 
+function deployEventOf(entry: OutboxEntry) {
+  const p = entry.payload as DeployPayload;
+  return {
+    clientId: entry.clientId,
+    signId: p.signId,
+    crewId: p.crewId,
+    // Stored as ISO; the contract type is Date (z.coerce.date output).
+    // JSON.stringify re-serializes it back to the same ISO string.
+    deployedAt: new Date(p.deployedAt),
+    notes: p.notes,
+    hasPhoto: p.hasPhoto,
+  };
+}
+
+// Flush a run of consecutive pending deploy entries as chunked batch POSTs —
+// one round-trip per MAX_DEPLOY_BATCH instead of per entry, which is the
+// difference between a ~1s and a ~20s drain for a 30-50 deploy reconnect on a
+// lossy floor. Outcome semantics mirror processEntry; a batch-level permanent
+// 4xx (unattributable to one event) falls back to per-entry replay so only the
+// offending entry dead-letters.
+async function processDeployRun(
+  run: OutboxEntry[],
+  acc: DrainResult,
+): Promise<"ok" | "stop"> {
+  for (let i = 0; i < run.length; i += MAX_DEPLOY_BATCH) {
+    const chunk = run.slice(i, i + MAX_DEPLOY_BATCH);
+    try {
+      const res = await postDeploy({ events: chunk.map(deployEventOf) });
+      const byClientId = new Map(res.results.map((r) => [r.clientId, r]));
+      for (const entry of chunk) {
+        const result = byClientId.get(entry.clientId);
+        // Defensive: a result the server didn't echo stays pending for the
+        // next drain rather than being silently dropped.
+        if (!result) continue;
+        if (result.status === "conflict") acc.deployConflicts.push(result.signId);
+        await deleteEntry(entry.clientId);
+        acc.drained += 1;
+      }
+    } catch (err) {
+      if (err instanceof ApiHttpError) {
+        if (err.status === 401) {
+          acc.authExpired = true;
+          return "stop";
+        }
+        if (err.permanent) {
+          // Replay this chunk per-entry: the batch 4xx can't say which event
+          // was bad, but individual POSTs dead-letter only the offender.
+          for (const entry of chunk) {
+            const outcome = await processEntry(entry, acc);
+            if (outcome === "ok") {
+              await deleteEntry(entry.clientId);
+              acc.drained += 1;
+            } else if (outcome === "stop") {
+              return "stop";
+            }
+            // "dead": processEntry already marked it failed; keep going.
+          }
+          continue;
+        }
+      }
+      return "stop"; // NetworkError / 429 / 5xx — leave the rest pending
+    }
+  }
+  return "ok";
+}
+
 // Drain every pending entry in FIFO-within-rank order. Dead-lettered (failed)
 // entries are skipped — they stay for the UI to surface and the user to discard.
+// Consecutive deploy entries batch into one POST (the endpoint takes an events
+// array); claims/releases interleaved between them break the run so the FIFO
+// claim→deploy ordering for the same sign is preserved.
 export async function drainOutbox(): Promise<DrainResult> {
   const acc: DrainResult = {
     drained: 0,
@@ -143,7 +212,22 @@ export async function drainOutbox(): Promise<DrainResult> {
     .filter((e) => e.status === "pending")
     .sort((a, b) => KIND_RANK[a.kind] - KIND_RANK[b.kind] || a.createdAt - b.createdAt);
 
-  for (const entry of entries) {
+  let i = 0;
+  while (i < entries.length) {
+    if (entries[i].kind === "deploy") {
+      const run: OutboxEntry[] = [];
+      while (i < entries.length && entries[i].kind === "deploy") {
+        run.push(entries[i]);
+        i += 1;
+      }
+      if ((await processDeployRun(run, acc)) === "stop") {
+        if (!acc.authExpired) acc.stoppedOffline = true;
+        break;
+      }
+      continue;
+    }
+
+    const entry = entries[i];
     const outcome = await processEntry(entry, acc);
     if (outcome === "ok") {
       await deleteEntry(entry.clientId);
@@ -155,6 +239,7 @@ export async function drainOutbox(): Promise<DrainResult> {
       break;
     }
     // "dead": already marked failed; keep going with the rest.
+    i += 1;
   }
   return acc;
 }

@@ -26,8 +26,12 @@ export function parseCsv(text: string): string[][] {
         i++;
         continue;
       }
-      field += c;
-      i++;
+      // Take the whole run up to the closing quote in one slice instead of a
+      // per-character append.
+      const close = text.indexOf('"', i);
+      const end = close === -1 ? text.length : close;
+      field += text.slice(i, end);
+      i = end;
       continue;
     }
 
@@ -64,8 +68,17 @@ export function parseCsv(text: string): string[][] {
       i++;
       continue;
     }
-    field += c;
-    i++;
+    // Plain run: extend to the next delimiter in one slice. Starting at i + 1
+    // is safe because the guards above already excluded every delimiter/quote
+    // as `c` — keep that invariant if adding branches above.
+    let j = i + 1;
+    while (j < text.length) {
+      const ch = text[j];
+      if (ch === '"' || ch === "," || ch === "\r" || ch === "\n") break;
+      j++;
+    }
+    field += text.slice(i, j);
+    i = j;
   }
 
   // Flush a trailing field/row when the file doesn't end in a newline.
