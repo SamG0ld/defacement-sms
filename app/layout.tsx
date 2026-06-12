@@ -22,7 +22,7 @@ const atkinson = Atkinson_Hyperlegible({
 
 export const metadata: Metadata = {
   title: "Defacement SMS",
-  description: "DEF CON Defacement signage management system.",
+  description: "Signage management system for a large hacking conference.",
   // Home-screen icon when the PWA is added on iOS (manifest icons cover Android).
   icons: { apple: "/apple-touch-icon.png" },
 };

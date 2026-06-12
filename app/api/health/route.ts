@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export function GET() {
   return NextResponse.json(
-    { status: "ok", service: "defcon-sms", time: new Date().toISOString() },
+    { status: "ok", service: "defacement-sms", time: new Date().toISOString() },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

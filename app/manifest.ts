@@ -13,7 +13,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Defacement SMS",
     short_name: "Defacement",
-    description: "DEF CON Defacement signage deployment — field tool.",
+    description: "Signage deployment field tool for a large hacking conference.",
     // Launch straight into the floor tool, not the admin dashboard.
     start_url: "/deploy",
     scope: "/",

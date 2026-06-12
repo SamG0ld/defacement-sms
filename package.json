@@ -2,7 +2,7 @@
   "name": "defacement-sms",
   "version": "0.1.0",
   "private": true,
-  "description": "Signage management system for the DEF CON Defacement team — sign tracking, CSV import/export, inventory, floor maps, and field deployment.",
+  "description": "Signage management system for a large hacking conference — sign tracking, CSV import/export, inventory, floor maps, and field deployment.",
   "license": "Apache-2.0",
   "scripts": {
     "dev": "next dev",
