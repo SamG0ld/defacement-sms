@@ -13,40 +13,40 @@ export type AuditRow = {
 export function AuditTable({ rows }: { rows: AuditRow[] }) {
   if (rows.length === 0) {
     return (
-      <p className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-6 text-center text-sm text-zinc-500">
-        No activity recorded yet.
+      <p className="panel px-3 py-6 text-center font-mono text-sm text-[var(--zinc-500)]">
+        {"// no activity recorded yet"}
       </p>
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-zinc-800">
-      <table className="w-full text-sm">
-        <thead className="bg-zinc-950 text-left text-xs uppercase text-zinc-500">
-          <tr>
-            <th className="px-3 py-2 font-medium">When</th>
-            <th className="px-3 py-2 font-medium">Who</th>
-            <th className="px-3 py-2 font-medium">Action</th>
-            <th className="px-3 py-2 font-medium">Detail</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-zinc-800">
-          {rows.map((r) => (
-            <tr key={r.id} className="text-zinc-200">
-              <td className="whitespace-nowrap px-3 py-2 text-xs text-zinc-400">
-                {formatDateTime(r.createdAt)}
-              </td>
-              <td className="px-3 py-2 text-zinc-300">{r.actorEmail ?? "—"}</td>
-              <td className="px-3 py-2">
-                <code className="rounded bg-zinc-900 px-1.5 py-0.5 text-xs text-zinc-300">
-                  {r.action}
-                </code>
-              </td>
-              <td className="px-3 py-2 text-zinc-300">{r.detail ?? "—"}</td>
+    <div className="panel overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="datatable">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Who</th>
+              <th>Action</th>
+              <th>Detail</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td className="t-mono whitespace-nowrap">
+                  {formatDateTime(r.createdAt)}
+                </td>
+                <td className="t-dim">{r.actorEmail ?? "—"}</td>
+                <td>
+                  <span className="t-id">{r.action}</span>
+                </td>
+                <td className="t-dim">{r.detail ?? "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

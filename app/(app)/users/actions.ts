@@ -8,6 +8,7 @@ import { recordAudit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { sendWelcomeEmail } from "@/lib/email";
 import { requireRole } from "@/lib/rbac";
+import { checkMutationRateLimit } from "@/lib/ratelimit";
 
 const ROLES = ["admin", "lead", "volunteer"] as const;
 
@@ -28,6 +29,8 @@ function fail(message: string): never {
 
 export async function addUser(formData: FormData): Promise<void> {
   const session = await requireRole("admin");
+  const budget = await checkMutationRateLimit(session.user.id);
+  if (!budget.success) fail("Too many changes at once. Please wait a moment.");
 
   const parsed = z
     .object({
@@ -83,6 +86,8 @@ export async function setUserActive(
   active: boolean,
 ): Promise<void> {
   const session = await requireRole("admin");
+  const budget = await checkMutationRateLimit(session.user.id);
+  if (!budget.success) fail("Too many changes at once. Please wait a moment.");
   if (userId === session.user.id) {
     fail("You can't change your own account status.");
   }
@@ -118,6 +123,8 @@ export async function setUserRole(
   formData: FormData,
 ): Promise<void> {
   const session = await requireRole("admin");
+  const budget = await checkMutationRateLimit(session.user.id);
+  if (!budget.success) fail("Too many changes at once. Please wait a moment.");
   if (userId === session.user.id) {
     fail("You can't change your own role.");
   }
@@ -152,6 +159,8 @@ export async function setUserRole(
 
 export async function removeUser(userId: string): Promise<void> {
   const session = await requireRole("admin");
+  const budget = await checkMutationRateLimit(session.user.id);
+  if (!budget.success) fail("Too many changes at once. Please wait a moment.");
   if (userId === session.user.id) {
     fail("You can't remove your own account.");
   }

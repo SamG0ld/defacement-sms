@@ -7,6 +7,12 @@
 FROM node:22-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
+# The Prisma schema + config must be present before install: the root `postinstall`
+# runs `prisma generate` (so a plain `npm install && next build` finds the generated
+# client). Without the schema here, that postinstall fails the deps stage — the
+# builder regenerates anyway, but the install itself must still succeed.
+COPY prisma ./prisma
+COPY prisma.config.ts ./
 # `npm install` (not `npm ci`): the lockfile's optional wasm deps for Tailwind v4's
 # native engine (@tailwindcss/oxide → @emnapi/*) don't reconcile under strict `npm ci`
 # across npm versions (lock written by npm 11, image runs npm 10). install resolves

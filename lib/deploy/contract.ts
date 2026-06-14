@@ -100,7 +100,13 @@ export const deployEventSchema = z.object({
   clientId,
   signId,
   crewId: crewId.nullish(), // optional: a sign can be deployed without a crew
-  deployedAt: z.coerce.date(), // client's local deploy time (ISO string in JSON)
+  deployedAt: z.coerce.date().refine(
+    (d) => {
+      const t = d.getTime();
+      return t >= CHANGED_AT_FLOOR_MS && t <= Date.now() + CHANGED_AT_SKEW_MS;
+    },
+    { message: "deployedAt is outside the acceptable range" },
+  ), // client's local deploy time (ISO string in JSON)
   notes: z.string().max(2000).optional(),
   hasPhoto: z.boolean().default(false), // photo trickles up separately, after
 });
@@ -166,7 +172,10 @@ export type BootstrapResponse = {
 
 // Incremental delta pull since a prior cursor.
 export const changesQuerySchema = z.object({
-  since: z.coerce.date(),
+  // Require a non-empty string before coercing to Date, so a missing ?since
+  // param (which searchParams.get returns as null → new Date(null) = epoch)
+  // cannot silently trigger a full-table scan returning all signs.
+  since: z.string().min(1, "since is required").pipe(z.coerce.date()),
 });
 export type ChangesQuery = z.infer<typeof changesQuerySchema>;
 
@@ -235,11 +244,15 @@ export type SetSignStatusInput = z.infer<typeof setSignStatusSchema>;
 //   duplicate — same clientId already processed (idempotent replay, no-op)
 //   noop      — the sign was already in that status; nothing to replay, no row
 //   not_found — no such sign (deleted between the client's read and this replay)
+//   forbidden — the actor isn't authorized for this change (e.g. a volunteer
+//               marking a sign deployed without their crew's claim, or any
+//               backward move); resolved server-side, the client drops it
 export const setSignStatusResults = [
   "applied",
   "duplicate",
   "noop",
   "not_found",
+  "forbidden",
 ] as const;
 export type SetSignStatusResult = (typeof setSignStatusResults)[number];
 

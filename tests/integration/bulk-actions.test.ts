@@ -205,18 +205,20 @@ describe("bulkSetHardwareCollected", () => {
 });
 
 describe("authorization", () => {
-  it("lets a volunteer bulk-set status but not bulk-delete", async () => {
+  it("restricts a volunteer's bulk-set-status to their claimed signs and blocks bulk-delete", async () => {
     vi.mocked(auth).mockResolvedValue({
       user: { id: "v1", email: "vol@example.com", isActive: true, role: "volunteer" },
     } as never);
-    const a = await seed({ itemId: "AUTH1" });
+    const a = await seed({ itemId: "AUTH1" }); // unclaimed → not the volunteer's
 
-    // status: allowed
+    // status: the volunteer holds no claim on this sign, so the bulk-set is
+    // intersected to nothing — a no-op, not an overwrite (H2/#20). (The positive
+    // claimed-signs case is covered in tests/integration/sign-status-authz.test.ts.)
     await captureRedirect(
       bulkSetStatus(form({ ids: ids([a]), setStatus: "printed" })),
     );
     expect((await prisma.sign.findUnique({ where: { id: a.id } }))?.status).toBe(
-      "printed",
+      "pending",
     );
 
     // delete: blocked (requireRole throws)

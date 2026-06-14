@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { logError } from "@/lib/log";
 
 // Append-only audit recorder for destructive / sensitive admin actions. Writes
 // one AuditLog row. Best-effort by design: a logging failure is swallowed (and
@@ -9,6 +10,9 @@ export async function recordAudit(entry: {
   actorId?: string | null;
   actorEmail?: string | null;
   detail?: string | null;
+  // Login-event context (auth.login / auth.denied); omitted for admin events.
+  userAgent?: string | null;
+  location?: string | null;
 }): Promise<void> {
   try {
     await prisma.auditLog.create({
@@ -17,9 +21,11 @@ export async function recordAudit(entry: {
         actorId: entry.actorId ?? null,
         actorEmail: entry.actorEmail ?? null,
         detail: entry.detail ?? null,
+        userAgent: entry.userAgent ? entry.userAgent.slice(0, 512) : null,
+        location: entry.location ?? null,
       },
     });
   } catch (err) {
-    console.error("recordAudit failed", entry.action, err);
+    logError("audit.record-failed", err, { action: entry.action });
   }
 }

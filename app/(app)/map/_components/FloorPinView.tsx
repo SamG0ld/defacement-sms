@@ -1,6 +1,8 @@
 import Link from "next/link";
 
 import { DeployPhotoPin } from "../../signs/_components/DeployPhoto";
+import { FloorImage } from "./FloorImage";
+import { MapPin } from "./MapPin";
 import { ZoomCanvas } from "./ZoomCanvas";
 
 export type FloorPin = {
@@ -10,7 +12,8 @@ export type FloorPin = {
   title?: string;
   href?: string;
   active?: boolean;
-  // Tailwind bg class for the dot (e.g. a status color). Defaults to accent.
+  // Tailwind TEXT color class for the marker (filled via currentColor), e.g. a
+  // status tone. Defaults to the accent.
   toneClass?: string;
   // When set, render a tappable pin that opens this sign's deploy photo instead
   // of a static dot/link. Mutually exclusive with href in practice.
@@ -19,8 +22,10 @@ export type FloorPin = {
 
 // Read-only floor map with pins overlaid by percentage (resolution-independent).
 // Shared by the sign-detail "Where it goes" panel and the /map overview. Server
-// component; pins are static dots, optional links, or — when photoSignId is set
-// — a DeployPhotoPin client island that opens the sign's deploy photo.
+// component; pins are teardrop MapPin markers (tip-anchored, zoom-true), optional
+// links, or — when photoSignId is set — a DeployPhotoPin client island that opens
+// the sign's deploy photo. The floor image is a FloorImage client island
+// (skeleton-on-load); both layers sit in the shared relative box.
 export function FloorPinView({
   src,
   label,
@@ -33,20 +38,17 @@ export function FloorPinView({
   return (
     <ZoomCanvas>
       <div className="relative w-full bg-white">
-        {/* eslint-disable-next-line @next/next/no-img-element -- static bundled floorplan, intrinsic size unknown */}
-        <img src={src} alt={label} className="block h-auto w-full select-none" />
-        {pins.map((p) => {
-          const dot = (
-            <span
-              className={`block rounded-full ring-2 ring-white ${
-                p.toneClass ?? "bg-[var(--accent)]"
-              } ${p.active ? "h-4 w-4" : "h-3 w-3"}`}
-            />
-          );
-          return (
+        <FloorImage src={src} label={label} />
+        {/* Pins overlay the image in the same coordinate space. The layer passes
+            gestures through (pan/zoom) while each pin re-enables pointer events.
+            `.pin-layer` drives the staggered entrance. Each pin's wrapper anchors
+            the marker TIP at its point via -translate-x-1/2 -translate-y-full
+            (the MapPin/KeepScale recipe). */}
+        <div className="pin-layer pointer-events-none absolute inset-0">
+          {pins.map((p) => (
             <div
               key={p.key}
-              className="absolute -translate-x-1/2 -translate-y-1/2"
+              className="pointer-events-auto absolute -translate-x-1/2 -translate-y-full"
               style={{ left: `${p.xPct}%`, top: `${p.yPct}%` }}
               // The photo pin carries its own title; avoid a double tooltip.
               title={p.photoSignId ? undefined : p.title}
@@ -58,15 +60,15 @@ export function FloorPinView({
                   title={p.title}
                 />
               ) : p.href ? (
-                <Link href={p.href} aria-label={p.title}>
-                  {dot}
+                <Link href={p.href} aria-label={p.title} className="block">
+                  <MapPin active={p.active} toneClass={p.toneClass} />
                 </Link>
               ) : (
-                dot
+                <MapPin active={p.active} toneClass={p.toneClass} />
               )}
             </div>
-          );
-        })}
+          ))}
+        </div>
       </div>
     </ZoomCanvas>
   );

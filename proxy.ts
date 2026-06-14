@@ -3,6 +3,13 @@ import type { NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 
 import { checkAuthRateLimit } from "@/lib/ratelimit";
+import {
+  buildCsp,
+  cspResponseHeaderName,
+  generateNonce,
+  resolveCspMode,
+  type CspMode,
+} from "@/lib/csp";
 
 // /invite is intentionally absent until the invitation flow ships — no point
 // leaving an unauthenticated public prefix for a route that doesn't exist.
@@ -16,6 +23,13 @@ const PUBLIC_PREFIXES = [
   "/login",
   "/api/auth",
   "/api/health",
+  // CSP violation reports are posted by the browser outside any session.
+  "/api/csp-report",
+  // The scheduled retention purge runs with no session (Vercel Cron); it
+  // enforces its own CRON_SECRET bearer and fails closed without it. Allowlist
+  // the exact path, not the /api/cron prefix, so a future cron route can't
+  // become internet-public by accident.
+  "/api/cron/purge-login-audit",
   "/sw.js",
   "/offline",
 ];
@@ -45,6 +59,17 @@ function getClientIp(req: NextRequest): string {
   return req.headers.get("x-real-ip") ?? "unknown";
 }
 
+// Stamp the nonce-bearing CSP onto a pass-through response under the mode's header
+// name (enforce → Content-Security-Policy, report → -Report-Only). The matching
+// request header (set in proxy) is what Next reads to nonce its <script> tags.
+function withCsp(res: NextResponse, csp: string, mode: CspMode): NextResponse {
+  res.headers.set(cspResponseHeaderName(mode), csp);
+  return res;
+}
+
+// enforce vs report is process-static (env-derived) — resolve once at module load.
+const CSP_MODE = resolveCspMode();
+
 export async function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
@@ -52,6 +77,7 @@ export async function proxy(req: NextRequest) {
     const ip = getClientIp(req);
     const { success, remaining, reset } = await checkAuthRateLimit(ip);
     if (!success) {
+      // 429: plain-text body has no script context; CSP omitted intentionally.
       return new NextResponse("Too many authentication attempts", {
         status: 429,
         headers: {
@@ -62,8 +88,20 @@ export async function proxy(req: NextRequest) {
     }
   }
 
+  // Per-request CSP nonce: set on the REQUEST headers so Next stamps it onto its
+  // framework/hydration <script> tags, and (via withCsp) on the RESPONSE so the
+  // browser enforces it. Single CSP source — next.config.ts no longer sets one.
+  const nonce = generateNonce();
+  const csp = buildCsp(nonce);
+  const requestHeaders = new Headers(req.headers);
+  requestHeaders.set("Content-Security-Policy", csp);
+
   if (isPublic(pathname)) {
-    return NextResponse.next();
+    return withCsp(
+      NextResponse.next({ request: { headers: requestHeaders } }),
+      csp,
+      CSP_MODE,
+    );
   }
 
   const token = await getToken({
@@ -78,7 +116,11 @@ export async function proxy(req: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  return NextResponse.next();
+  return withCsp(
+    NextResponse.next({ request: { headers: requestHeaders } }),
+    csp,
+    CSP_MODE,
+  );
 }
 
 export const config = {

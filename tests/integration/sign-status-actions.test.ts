@@ -4,8 +4,13 @@ import { prisma } from "@/lib/db";
 import { setSignStatus } from "@/lib/deploy/service";
 import type { ApiActor } from "@/lib/deploy/api-types";
 
-const actorA: ApiActor = { userId: "uA", email: "a@example.com", role: "volunteer" };
-const actorB: ApiActor = { userId: "uB", email: "b@example.com", role: "volunteer" };
+// These exercise setSignStatus MECHANICS (apply / duplicate / noop / not_found /
+// last-writer-wins / stamps), independent of role — so the actors are admins to
+// keep the authorization layer out of the way. The authz policy itself (volunteer
+// forward-only, claim-to-deploy, lead-only targets) is covered in
+// tests/integration/sign-status-authz.test.ts.
+const actorA: ApiActor = { userId: "uA", email: "a@example.com", role: "admin" };
+const actorB: ApiActor = { userId: "uB", email: "b@example.com", role: "admin" };
 
 let seq = 0;
 function seedSign(status = "sorted") {

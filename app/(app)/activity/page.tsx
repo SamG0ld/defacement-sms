@@ -6,11 +6,17 @@ import { requireRole } from "@/lib/rbac";
 import { PagerLink } from "../signs/_components/PagerLink";
 import { AuditTable, type AuditRow } from "./_components/AuditTable";
 import { DeployTable, type DeployRow } from "./_components/DeployTable";
+import { LoginsTable, type LoginRow } from "./_components/LoginsTable";
 import { StatusTable, type StatusRow } from "./_components/StatusTable";
 
 const PAGE_SIZE = 50;
 
-type ActivityView = "audit" | "status" | "deploy";
+// Authentication events live on the admin-only Logins tab; they are excluded
+// from the lead-visible "Admin events" tab so their location / device / denied
+// email never surfaces there.
+const AUTH_ACTIONS = ["auth.login", "auth.denied"];
+
+type ActivityView = "audit" | "status" | "deploy" | "logins";
 
 type ActivityPageProps = {
   searchParams: Promise<{ view?: string; page?: string; action?: string }>;
@@ -19,11 +25,22 @@ type ActivityPageProps = {
 export default async function ActivityPage({ searchParams }: ActivityPageProps) {
   // Lead+ can see the activity log (the (app) layout already guarantees an
   // authenticated active session).
-  await requireRole("lead");
+  const session = await requireRole("lead");
+  const isAdmin = session.user.role === "admin";
 
   const sp = await searchParams;
   const view: ActivityView =
-    sp.view === "status" ? "status" : sp.view === "deploy" ? "deploy" : "audit";
+    sp.view === "status"
+      ? "status"
+      : sp.view === "deploy"
+        ? "deploy"
+        : sp.view === "logins"
+          ? "logins"
+          : "audit";
+
+  // The Logins tab exposes coarse location + device (PII) — admin-only, even
+  // though the rest of /activity is lead+.
+  if (view === "logins") await requireRole("admin");
   const page = Math.max(1, Number.parseInt(sp.page ?? "1", 10) || 1);
   const action =
     typeof sp.action === "string" && sp.action ? sp.action : undefined;
@@ -33,9 +50,16 @@ export default async function ActivityPage({ searchParams }: ActivityPageProps) 
   let auditRows: AuditRow[] = [];
   let statusRows: StatusRow[] = [];
   let deployRows: DeployRow[] = [];
+  let loginRows: LoginRow[] = [];
 
   if (view === "audit") {
-    const where = action ? { action } : {};
+    // Filter to a specific non-auth action if requested; otherwise list all
+    // admin events. Either way exclude auth.* — including stripping an auth.*
+    // value passed via ?action= so a lead can't surface login rows here.
+    const where =
+      action && !AUTH_ACTIONS.includes(action)
+        ? { action }
+        : { action: { notIn: AUTH_ACTIONS } };
     [total, auditRows] = await Promise.all([
       prisma.auditLog.count({ where }),
       prisma.auditLog.findMany({
@@ -103,6 +127,26 @@ export default async function ActivityPage({ searchParams }: ActivityPageProps) 
       hasPhoto: e.photoUrl !== null,
       sign: signById.get(e.signId) ?? null,
     }));
+  } else if (view === "logins") {
+    const where = { action: { in: AUTH_ACTIONS } };
+    [total, loginRows] = await Promise.all([
+      prisma.auditLog.count({ where }),
+      prisma.auditLog.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: PAGE_SIZE,
+        select: {
+          id: true,
+          action: true,
+          actorEmail: true,
+          detail: true,
+          location: true,
+          userAgent: true,
+          createdAt: true,
+        },
+      }),
+    ]);
   } else {
     [total, statusRows] = await Promise.all([
       prisma.statusHistory.count(),
@@ -128,41 +172,41 @@ export default async function ActivityPage({ searchParams }: ActivityPageProps) 
     ...(action ? { action } : {}),
   }).toString();
 
-  const tab = (key: ActivityView, label: string) => {
-    const active = view === key;
-    return (
-      <Link
-        href={`/activity?view=${key}`}
-        className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
-          active
-            ? "border-accent text-zinc-100"
-            : "border-transparent text-zinc-400 hover:text-zinc-200"
-        }`}
-      >
-        {label}
-      </Link>
-    );
-  };
+  const tab = (key: ActivityView, label: string) => (
+    <Link
+      href={`/activity?view=${key}`}
+      aria-current={view === key ? "page" : undefined}
+      className={"chip" + (view === key ? " active" : "")}
+    >
+      {label}
+    </Link>
+  );
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-semibold">Activity</h1>
-        <p className="text-sm text-zinc-400">
+    <div className="space-y-5">
+      <div>
+        <span className="prompt">ACTIVITY</span>
+        <h1 className="mt-1.5 text-[24px] font-extrabold tracking-tight">
+          Activity log
+        </h1>
+        <p className="mt-1 text-sm text-zinc-400">
           Who did what — admin events and sign status changes. Newest first.
         </p>
       </div>
 
-      <div className="flex items-center gap-1 border-b border-zinc-800">
+      <nav className="chiprow" aria-label="Activity view">
         {tab("audit", "Admin events")}
         {tab("status", "Status changes")}
         {tab("deploy", "Deploys")}
-      </div>
+        {isAdmin && tab("logins", "Logins")}
+      </nav>
 
       {view === "audit" ? (
         <AuditTable rows={auditRows} />
       ) : view === "deploy" ? (
         <DeployTable rows={deployRows} />
+      ) : view === "logins" ? (
+        <LoginsTable rows={loginRows} />
       ) : (
         <StatusTable rows={statusRows} />
       )}

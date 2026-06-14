@@ -18,7 +18,7 @@ import { useState } from "react";
 import type { SignStatus } from "@/app/generated/prisma/client";
 
 import { updateSignStatus } from "./actions";
-import { SIGN_STATUSES, statusBadgeClass } from "./_lib";
+import { SIGN_STATUSES, statusBadgeClass, statusLabel } from "./_lib";
 import { useStatusSync } from "./_sync/provider";
 
 export function RowStatusControl({
@@ -45,11 +45,8 @@ export function RowStatusControl({
       {SIGN_STATUSES.map((s) => {
         if (s === current) {
           return (
-            <span
-              key={s}
-              className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[10px] uppercase ${statusBadgeClass(s)}`}
-            >
-              {s}
+            <span key={s} className={`badge ${statusBadgeClass(s)}`}>
+              {statusLabel(s)}
               {indicator === "queued" && (
                 <span className="text-amber-300" title="Queued — syncing">
                   ⟳
@@ -72,11 +69,11 @@ export function RowStatusControl({
             title={`Change status to ${s}`}
             className={
               isArmed
-                ? `rounded border px-2 py-0.5 text-[10px] uppercase ${statusBadgeClass(s)} ring-1 ring-[var(--accent)]`
+                ? `rounded border px-2 py-0.5 text-[10px] uppercase ${statusBadgeClass(s)} is-armed`
                 : "rounded border border-zinc-800 px-2 py-0.5 text-[10px] uppercase text-zinc-500 hover:border-zinc-500 hover:text-zinc-200"
             }
           >
-            {s}
+            {statusLabel(s)}
           </button>
         );
       })}
@@ -104,7 +101,7 @@ export function RowStatusControl({
                 );
               }
             }}
-            className="rounded border border-[var(--accent)] px-2 py-0.5 text-[10px] uppercase text-accent hover:opacity-80"
+            className="fade-in rounded border border-[var(--accent)] px-2 py-0.5 text-[10px] uppercase text-accent hover:opacity-80"
           >
             ✓ confirm
           </button>

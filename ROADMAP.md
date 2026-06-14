@@ -9,7 +9,7 @@ a Flask app that ran a large hacking conference's signage workflow in production
   sessions, closed registration (invitation-gated sign-in), role tiers (admin / lead / volunteer),
   and a per-user session kill-switch.
 - **Security baseline** — edge auth gate + auth-endpoint rate limiting (`proxy.ts`), security
-  headers and a report-only CSP, formula-injection-safe CSV export, hashed single-use tokens.
+  headers and a per-request nonce-based CSP, and formula-injection-safe CSV export.
 - **Data model** — full domain schema (signs, zones, locations, tags, equipment, status history,
   audit log) in Prisma, with migrations.
 - **Dashboard** — status counts, deployment progress, deploy-by-today / overdue tiles.
@@ -34,8 +34,11 @@ a Flask app that ran a large hacking conference's signage workflow in production
 - **Field-deployment PWA** (`/deploy`) — offline-first, installable; crews claim batches of
   `sorted` signs under an exclusive lock and mark them deployed with an optional photo, working
   with no network and syncing on reconnect (IndexedDB outbox over the `/api/native/*` JSON API).
+  Device-adaptive layout — a full-screen field flow on phones, a multi-column console on desktop.
 - **Admin & user management** — add/role/deactivate users, clear test data or all signs behind a
-  typed confirmation, with destructive actions written to an audit log.
+  typed confirmation, with destructive actions written to an audit log. A **login audit history**
+  (admin-only Logins tab) records successful and denied sign-ins with coarse location and device,
+  auto-purged after 90 days by a scheduled job.
 
 ## In progress / planned
 
@@ -52,6 +55,6 @@ a Flask app that ran a large hacking conference's signage workflow in production
 
 ## Notes
 
-The tokenized one-time-invitation-link flow in `lib/invitations.ts` is intentionally parked as
-redundant — closed registration plus magic-link sign-in already cover inviting a teammate (add
-them on `/users`, they receive a sign-in link).
+A tokenized one-time-invitation-link flow is intentionally parked as redundant — closed
+registration plus magic-link sign-in already cover inviting a teammate (add them on `/users`, they
+receive a sign-in link).

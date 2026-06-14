@@ -42,7 +42,7 @@ export function FloorReassign({
         <select
           value={floorKey}
           onChange={(e) => setFloorKey(e.target.value)}
-          className="w-fit rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm font-normal normal-case tracking-normal text-zinc-100"
+          className="field w-fit font-normal normal-case tracking-normal"
         >
           {floors.map((f) => (
             <option key={f.key} value={f.key}>

@@ -7,6 +7,8 @@ import { Prisma, type SignStatus } from "@/app/generated/prisma/client";
 import { prisma } from "@/lib/db";
 import { recordAudit } from "@/lib/audit";
 import { stampsForStatus } from "@/app/(app)/signs/_lib";
+import { decideStatusChange } from "@/lib/sign-status-authz";
+import { actorHoldsClaim } from "@/lib/sign-claims";
 import {
   buildClaimResponse,
   classifyDeploys,
@@ -133,12 +135,24 @@ export async function joinCrew(crewId: number, actor: ApiActor): Promise<CrewVie
     create: { crewId, userId: actor.userId },
     update: {},
   });
+  await recordAudit({
+    action: "crew.join",
+    actorId: actor.userId,
+    actorEmail: actor.email,
+    detail: `crew #${crewId} "${crew.name}"`,
+  });
   return crewView(crewId);
 }
 
 export async function leaveCrew(crewId: number, actor: ApiActor): Promise<void> {
   await prisma.crewMember.deleteMany({
     where: { crewId, userId: actor.userId },
+  });
+  await recordAudit({
+    action: "crew.leave",
+    actorId: actor.userId,
+    actorEmail: actor.email,
+    detail: `crew #${crewId}`,
   });
 }
 
@@ -425,7 +439,7 @@ export async function setSignStatus(
     }),
     prisma.sign.findUnique({
       where: { id: req.signId },
-      select: { status: true },
+      select: { status: true, claimedByCrewId: true },
     }),
   ]);
 
@@ -439,6 +453,25 @@ export async function setSignStatus(
   // add (a no-op has nothing to replay; a duplicate already has its row).
   if (result !== "applied") {
     return { signId: req.signId, status: req.status, result };
+  }
+
+  // H2: authorize the actual change. `sign` is non-null here (classify only
+  // returns "applied" when it exists). Volunteers are forward-only and need
+  // their crew's claim to mark a sign `deployed`; regressions are lead/admin.
+  // A rejected queued change is echoed as `forbidden` so the offline client
+  // resolves (drops) it instead of replaying it forever.
+  const holdsClaim =
+    req.status === "deployed"
+      ? await actorHoldsClaim(actor.userId, sign!.claimedByCrewId)
+      : false;
+  const decision = decideStatusChange({
+    role: actor.role,
+    currentStatus: sign!.status,
+    targetStatus: req.status,
+    actorHoldsClaim: holdsClaim,
+  });
+  if (!decision.ok) {
+    return { signId: req.signId, status: req.status, result: "forbidden" };
   }
 
   // `sign` is non-null here: classify only returns "applied" when the sign
@@ -590,6 +623,7 @@ export async function changes(since: Date): Promise<ChangesResponse> {
   const signs = await prisma.sign.findMany({
     where: { status: { in: WORKING_STATUSES }, updatedAt: { gt: since } },
     select: SIGN_VIEW_SELECT,
+    take: 5000, // cap matches /sync/bootstrap; prevents unbounded scans
   });
   const views = signs.map(toSignView);
   return {

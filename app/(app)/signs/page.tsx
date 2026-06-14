@@ -3,6 +3,8 @@ import Link from "next/link";
 import { getSession } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { hasRole } from "@/lib/rbac";
+import { Icons } from "@/app/_components/Icons";
+import { TelemetryGauge } from "@/app/_components/TelemetryGauge";
 
 import {
   DEPLOYMENT_SLOTS,
@@ -13,10 +15,13 @@ import {
   shortZoneLabel,
 } from "./_lib";
 import { BulkBar, SelectionProvider } from "./_selection";
+import { DistBar } from "./_components/DistBar";
+import { FilterChips } from "./_components/FilterChips";
 import { PagerLink } from "./_components/PagerLink";
 import { SearchField } from "./_components/SearchField";
 import { SignCards } from "./_components/SignCards";
 import { SignsTable } from "./_components/SignsTable";
+import { SignsView } from "./_components/SignsView";
 import { signRowSelect } from "./_components/types";
 
 const PAGE_SIZE = 50;
@@ -58,8 +63,9 @@ async function getSignTypes(): Promise<string[]> {
   return value;
 }
 
-// Serialize the active filters back into a query string (used by the pager and
-// the per-row status forms so a status change returns to the same view).
+// Serialize the active filters back into a query string (used by the pager, the
+// status chips, and the per-row status forms so a status change returns to the
+// same view). Never emits `page`, so it always lands on page 1.
 function filterQuery(f: {
   status: string;
   zone: string;
@@ -107,29 +113,55 @@ export default async function SignsPage({
   const error = firstStr(sp.error);
   const page = Math.max(1, Number.parseInt(firstStr(sp.page) || "1", 10) || 1);
 
-  // Build the Prisma filter from the active params (shared with CSV export).
+  // The list query honours every active filter; the per-status counts that feed
+  // the chips + telemetry honour the list filters EXCEPT status (so the chips show
+  // the full stage distribution within the current view) and EXCEPT `due`. `due`
+  // is a dashboard urgency shortcut that forces `status != deployed` inside
+  // buildSignWhere — leaving it in would zero the gauge's deployed count and make
+  // the readout lie, so telemetry/chips ignore it (the list still honours it).
   const where = buildSignWhere(f);
+  const whereCounts = buildSignWhere({ ...f, status: "", due: "" });
 
-  const [signs, total, zones, tags, signTypes] = await Promise.all([
-    prisma.sign.findMany({
-      where,
-      select: signRowSelect,
-      orderBy: [{ deploymentPriority: "asc" }, { itemId: "asc" }],
-      take: PAGE_SIZE,
-      skip: (page - 1) * PAGE_SIZE,
-    }),
-    prisma.sign.count({ where }),
-    prisma.zone.findMany({
-      where: { isActive: true },
-      orderBy: [{ deploymentPriority: "asc" }, { zoneCode: "asc" }],
-      select: { id: true, zoneCode: true, zoneName: true, building: true },
-    }),
-    prisma.signTag.findMany({
-      orderBy: { name: "asc" },
-      select: { id: true, slug: true, name: true },
-    }),
-    getSignTypes(),
-  ]);
+  const [signs, total, statusGroups, zones, tags, signTypes] = await Promise.all(
+    [
+      prisma.sign.findMany({
+        where,
+        select: signRowSelect,
+        orderBy: [{ deploymentPriority: "asc" }, { itemId: "asc" }],
+        take: PAGE_SIZE,
+        skip: (page - 1) * PAGE_SIZE,
+      }),
+      prisma.sign.count({ where }),
+      prisma.sign.groupBy({
+        by: ["status"],
+        where: whereCounts,
+        _count: { _all: true },
+      }),
+      prisma.zone.findMany({
+        where: { isActive: true },
+        orderBy: [{ deploymentPriority: "asc" }, { zoneCode: "asc" }],
+        select: { id: true, zoneCode: true, zoneName: true, building: true },
+      }),
+      prisma.signTag.findMany({
+        orderBy: { name: "asc" },
+        select: { id: true, slug: true, name: true },
+      }),
+      getSignTypes(),
+    ],
+  );
+
+  // Per-stage counts → telemetry. "deployed" telemetry counts the two terminal
+  // up-states (deployed + externally installed).
+  const counts: Record<string, number> = {};
+  for (const g of statusGroups) counts[g.status] = g._count._all;
+  const grandTotal = SIGN_STATUSES.reduce(
+    (acc, s) => acc + (counts[s] ?? 0),
+    0,
+  );
+  const deployedCount = (counts.deployed ?? 0) + (counts.installed ?? 0);
+  const deployPct = grandTotal
+    ? Math.round((deployedCount / grandTotal) * 100)
+    : 0;
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const baseQuery = filterQuery(f);
@@ -137,6 +169,21 @@ export default async function SignsPage({
   // search preserves status/zone/tag/etc. (filterQuery never emits `page`, and
   // buildSearchHref also drops it, so a new search lands on page 1).
   const searchOtherParams = filterQuery({ ...f, q: "" });
+  // Href for a status chip: current filters with `status` set (or cleared), and
+  // `due` dropped (chips are a pure status filter — clicking one escapes the
+  // dashboard urgency shortcut), page dropped. Reuses filterQuery so it stays in
+  // lockstep with the pager/forms.
+  const hrefForStatus = (status: string) => {
+    const qs = filterQuery({ ...f, status, due: "" });
+    return qs ? `/signs?${qs}` : "/signs";
+  };
+  const secondaryActive = !!(
+    f.zone ||
+    f.tag ||
+    f.slot ||
+    f.type ||
+    f.category
+  );
 
   // Props for the selection island / bulk bar. returnTo keeps the user on this
   // exact filtered + paged view after a bulk action revalidates.
@@ -148,49 +195,53 @@ export default async function SignsPage({
   const tagOptions = tags.map((t) => ({ id: t.id, name: t.name }));
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold">Signs</h1>
-          <p className="text-sm text-zinc-400">
-            {total} sign{total === 1 ? "" : "s"}
-            {baseQuery ? " (filtered)" : ""}.
-          </p>
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex flex-wrap items-end justify-between gap-3.5">
+        <div>
+          <span className="prompt">SIGNS</span>
+          <div className="mt-1.5 flex items-baseline gap-2.5">
+            <h1 className="text-[24px] font-extrabold tracking-tight">Signs</h1>
+            <span
+              className="font-mono text-[12px]"
+              style={{ color: "var(--zinc-500)" }}
+            >
+              {baseQuery ? `${total} / ${grandTotal}` : `${total} records`}
+            </span>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="searchbox">
+            <span className="ic">
+              <Icons.search width={15} height={15} />
+            </span>
+            <SearchField
+              defaultValue={f.q}
+              otherParams={searchOtherParams}
+              className=""
+            />
+          </div>
           <Link
             href={`/signs/export${baseQuery ? `?${baseQuery}` : ""}`}
-            className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+            className="btn"
           >
             Export CSV
           </Link>
           {isAdmin && (
-            <Link
-              href="/signs/manage"
-              className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
-            >
+            <Link href="/signs/manage" className="btn">
               Manage
             </Link>
           )}
           {canManage && (
             <>
-              <Link
-                href="/signs/generate"
-                className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
-              >
+              <Link href="/signs/generate" className="btn">
                 Generation
               </Link>
-              <Link
-                href="/signs/import"
-                className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
-              >
+              <Link href="/signs/import" className="btn">
                 Import
               </Link>
-              <Link
-                href="/signs/new"
-                className="btn-primary rounded px-3 py-1.5 text-sm font-medium"
-              >
-                New sign
+              <Link href="/signs/new" className="btn btn-primary">
+                + New sign
               </Link>
             </>
           )}
@@ -203,133 +254,153 @@ export default async function SignsPage({
         </div>
       )}
 
-      {/* GET filter form — the selects submit via "Apply filters" (reloads with
-          updated params). The Search field is live (debounced soft-nav) but keeps
-          name="q" so it still degrades to a normal form submit without JS. */}
-      <form
-        method="get"
-        className="grid grid-cols-2 gap-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4 md:grid-cols-3 lg:grid-cols-6"
-      >
-        <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          Status
-          <select
-            name="status"
-            defaultValue={f.status}
-            className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
+      {/* Telemetry */}
+      <div className="panel" style={{ padding: "15px 18px" }}>
+        <TelemetryGauge
+          deployed={deployedCount}
+          total={grandTotal}
+          pct={deployPct}
+          segments={34}
+        />
+        <div className="mt-3 flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <DistBar counts={counts} total={grandTotal} />
+          </div>
+          <span
+            className="whitespace-nowrap font-mono text-[10.5px]"
+            style={{ color: "var(--zinc-500)" }}
           >
-            <option value="">All</option>
-            {SIGN_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          Zone
-          <select
-            name="zone"
-            defaultValue={f.zone}
-            className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
-          >
-            <option value="">All</option>
-            {zones.map((z) => (
-              <option key={z.id} value={String(z.id)}>
-                {shortZoneLabel(z)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          Tag
-          <select
-            name="tag"
-            defaultValue={f.tag}
-            className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
-          >
-            <option value="">All</option>
-            {tags.map((t) => (
-              <option key={t.slug} value={t.slug}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          Slot
-          <select
-            name="slot"
-            defaultValue={f.slot}
-            className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
-          >
-            <option value="">All</option>
-            {DEPLOYMENT_SLOTS.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          Type
-          <select
-            name="type"
-            defaultValue={f.type}
-            className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
-          >
-            <option value="">All</option>
-            {signTypes.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          Category
-          <select
-            name="category"
-            defaultValue={f.category}
-            className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
-          >
-            <option value="">All</option>
-            {SIGN_CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {SIGN_CATEGORY_LABELS[c]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-zinc-400">
-          Search
-          <SearchField defaultValue={f.q} otherParams={searchOtherParams} />
-        </label>
-        <div className="col-span-2 flex items-center gap-2 md:col-span-3 lg:col-span-6">
-          <button
-            type="submit"
-            className="btn-primary rounded px-3 py-1.5 text-sm font-medium"
-          >
-            Apply filters
-          </button>
-          {baseQuery && (
-            <Link
-              href="/signs"
-              className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
-            >
-              Clear
-            </Link>
-          )}
+            {SIGN_STATUSES.length} stages
+          </span>
         </div>
-      </form>
+      </div>
+
+      {/* Status filter chips */}
+      <FilterChips
+        active={f.status}
+        counts={counts}
+        total={grandTotal}
+        hrefForStatus={hrefForStatus}
+      />
+
+      {/* Secondary filters (zone / tag / slot / type / category) — tucked into a
+          disclosure so the default view stays clean; auto-opens when one is set.
+          A GET form that carries the active status + search as hidden inputs so
+          applying a secondary filter preserves the current chip and search. */}
+      <details
+        open={secondaryActive}
+        className="rounded-lg border border-[var(--line)] bg-[var(--surface)]"
+      >
+        <summary className="cursor-pointer select-none px-4 py-2.5 font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--zinc-400)] hover:text-[var(--foreground)]">
+          More filters{secondaryActive ? " · active" : ""}
+        </summary>
+        <form
+          method="get"
+          className="grid grid-cols-2 gap-3 border-t border-[var(--line)] p-4 md:grid-cols-3 lg:grid-cols-5"
+        >
+          <input type="hidden" name="status" value={f.status} />
+          <input type="hidden" name="q" value={f.q} />
+          <label className="flex flex-col gap-1 text-xs text-zinc-400">
+            Zone
+            <select
+              name="zone"
+              defaultValue={f.zone}
+              className="field"
+            >
+              <option value="">All</option>
+              {zones.map((z) => (
+                <option key={z.id} value={String(z.id)}>
+                  {shortZoneLabel(z)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-zinc-400">
+            Tag
+            <select
+              name="tag"
+              defaultValue={f.tag}
+              className="field"
+            >
+              <option value="">All</option>
+              {tags.map((t) => (
+                <option key={t.slug} value={t.slug}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-zinc-400">
+            Slot
+            <select
+              name="slot"
+              defaultValue={f.slot}
+              className="field"
+            >
+              <option value="">All</option>
+              {DEPLOYMENT_SLOTS.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-zinc-400">
+            Type
+            <select
+              name="type"
+              defaultValue={f.type}
+              className="field"
+            >
+              <option value="">All</option>
+              {signTypes.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-zinc-400">
+            Category
+            <select
+              name="category"
+              defaultValue={f.category}
+              className="field"
+            >
+              <option value="">All</option>
+              {SIGN_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {SIGN_CATEGORY_LABELS[c]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="col-span-2 flex items-center gap-2 md:col-span-3 lg:col-span-5">
+            <button type="submit" className="btn btn-primary">
+              Apply filters
+            </button>
+            {baseQuery && (
+              <Link href="/signs" className="btn">
+                Clear
+              </Link>
+            )}
+          </div>
+        </form>
+      </details>
 
       {signs.length === 0 ? (
-        <div className="rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-10 text-center text-sm text-zinc-500">
-          No signs match these filters.
+        <div className="panel px-4 py-10 text-center font-mono text-sm text-[var(--zinc-500)]">
+          {"// no signs match these filters"}
         </div>
       ) : (
         <SelectionProvider pageIds={pageIds} total={total}>
-          <SignsTable signs={signs} />
-          <SignCards signs={signs} />
+          {/* Both subtrees are server-rendered; SignsView mounts only one of
+              them on the client per the device signal (fewer hydrated rows than
+              the old md:hidden / hidden-md:block double-DOM). */}
+          <SignsView
+            table={<SignsTable signs={signs} />}
+            cards={<SignCards signs={signs} />}
+          />
 
           <BulkBar
             canManage={canManage}

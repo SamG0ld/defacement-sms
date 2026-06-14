@@ -48,7 +48,7 @@ export function AssetSection({
         Hardware — need vs. have
       </h2>
       {reconciliation.length === 0 ? (
-        <div className="rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-6 text-center text-sm text-zinc-500">
+        <div className="panel px-4 py-6 text-center text-sm text-zinc-500">
           No hardware items yet.
         </div>
       ) : edit && canManage ? (
@@ -66,7 +66,7 @@ export function AssetSection({
 
 function CategoryCard({ cat }: { cat: CategoryReconciliation }) {
   return (
-    <div className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4">
+    <div className="panel space-y-3 p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <h3 className="text-sm font-semibold text-zinc-200">{cat.category}s</h3>
         <div className="flex gap-3 text-xs text-zinc-400">
@@ -83,7 +83,9 @@ function CategoryCard({ cat }: { cat: CategoryReconciliation }) {
               Order <strong>{cat.gap}</strong>
             </span>
           )}
-          {cat.gap === 0 && <span className="text-emerald-400">covered</span>}
+          {cat.gap === 0 && (
+            <span className="text-[var(--accent)]">covered</span>
+          )}
         </div>
       </div>
       <NeedHaveBar have={cat.have} need={cat.need} />
@@ -108,31 +110,31 @@ function EditGrid({
 }) {
   const colSpan = 1 + ASSET_COUNT_FIELDS.length + 1 + 1;
   return (
-    <div className="overflow-x-auto rounded-lg border border-zinc-800">
-      <table className="w-full text-sm">
-        <thead className="bg-zinc-950 text-left text-xs uppercase text-zinc-500">
-          <tr>
-            <th className="px-3 py-2 font-medium">Item</th>
-            {ASSET_COUNT_FIELDS.map((f) => (
-              <th key={f.key} className="px-3 py-2 font-medium">
-                {f.label}
-              </th>
+    <div className="panel overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="datatable">
+          <thead>
+            <tr>
+              <th>Item</th>
+              {ASSET_COUNT_FIELDS.map((f) => (
+                <th key={f.key}>{f.label}</th>
+              ))}
+              <th>Notes</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {reconciliation.map((cat) => (
+              <CategoryGroup
+                key={cat.category}
+                cat={cat}
+                year={year}
+                colSpan={colSpan}
+              />
             ))}
-            <th className="px-3 py-2 font-medium">Notes</th>
-            <th className="px-3 py-2" />
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-zinc-800">
-          {reconciliation.map((cat) => (
-            <CategoryGroup
-              key={cat.category}
-              cat={cat}
-              year={year}
-              colSpan={colSpan}
-            />
-          ))}
-        </tbody>
-      </table>
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -148,8 +150,8 @@ function CategoryGroup({
 }) {
   return (
     <>
-      <tr className="bg-black/40">
-        <td colSpan={colSpan} className="px-3 py-2">
+      <tr className="bg-[var(--surface-2)]">
+        <td colSpan={colSpan}>
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
             {/* Naive +"s" plural — safe because ASSET_CATEGORIES are all
                 singular non-s words (Easel/Meterboard/Stand/Banner). */}
@@ -182,7 +184,7 @@ function CategoryGroup({
       </tr>
       {cat.items.map((item) => (
         <tr key={item.id} className="align-middle text-zinc-200">
-          <td className="px-3 py-2">
+          <td>
             <EquipmentManageRow
               typeId={item.id}
               year={year}

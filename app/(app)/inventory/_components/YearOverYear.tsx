@@ -46,44 +46,41 @@ export function YearOverYear({ history }: { history: HistoryRow[] }) {
       <h2 className="text-sm font-semibold text-zinc-300">
         Year over year — end-of-con counts
       </h2>
-      <div className="overflow-x-auto rounded-lg border border-zinc-800">
-        <table className="w-full text-sm">
-          <thead className="bg-zinc-950 text-left text-xs uppercase text-zinc-500">
-            <tr>
-              <th className="px-3 py-2 font-medium">Item</th>
-              {years.map((y) => (
-                <th key={y} className="px-3 py-2 text-right font-medium">
-                  <div>{conLabelForYear(y)}</div>
-                  <div className="text-[10px] font-normal normal-case text-zinc-600">
-                    {y}
-                  </div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-zinc-800">
-            {rows.map((row) => (
-              <tr key={row.id} className="text-zinc-200">
-                <td className="px-3 py-2">
-                  {row.name}
-                  {row.category && (
-                    <span className="ml-2 text-xs text-zinc-500">
-                      {row.category}
-                    </span>
-                  )}
-                </td>
+      <div className="panel overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="datatable">
+            <thead>
+              <tr>
+                <th>Item</th>
                 {years.map((y) => (
-                  <td
-                    key={y}
-                    className="px-3 py-2 text-right tabular-nums text-zinc-300"
-                  >
-                    {row.byYear.has(y) ? row.byYear.get(y) : "—"}
-                  </td>
+                  <th key={y} className="text-right">
+                    <div>{conLabelForYear(y)}</div>
+                    <div className="text-[10px] font-normal normal-case text-zinc-600">
+                      {y}
+                    </div>
+                  </th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={row.id} className="text-zinc-200">
+                  <td>
+                    {row.name}
+                    {row.category && (
+                      <span className="ml-2 t-dim">{row.category}</span>
+                    )}
+                  </td>
+                  {years.map((y) => (
+                    <td key={y} className="t-mono tabular-nums text-right">
+                      {row.byYear.has(y) ? row.byYear.get(y) : "—"}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
   );

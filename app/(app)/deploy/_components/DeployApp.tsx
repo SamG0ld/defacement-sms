@@ -1,8 +1,10 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type { DeploySignView } from "@/lib/deploy/contract";
+import { useDevice } from "@/app/_components/DeviceProvider";
+import { Skeleton } from "@/app/_components/Skeleton";
 import { useDeployStore } from "../_lib/store";
 import type {
   ClaimPayload,
@@ -10,13 +12,23 @@ import type {
   ReleasePayload,
 } from "../_lib/types";
 import { CrewBar } from "./CrewBar";
+import { DeploySheet } from "./DeploySheet";
+import { FocusPane } from "./FocusPane";
 import { QueuePanel } from "./QueuePanel";
 import { SignList } from "./SignList";
 
 // Top-level client app for the floor tool. Owns the store and derives the three
-// sign buckets the UI renders. Everything below it is presentational.
+// sign buckets the UI renders. The layout is device-adaptive: a single-column
+// field flow on mobile, a list + right-rail (sync queue + sign preview) layout on
+// desktop. Everything below it is presentational.
 export function DeployApp({ currentUserId }: { currentUserId: string }) {
   const store = useDeployStore(currentUserId);
+  const { isMobile } = useDevice();
+
+  // Desktop preview focus + the single deploy-confirmation target, both hoisted
+  // here so the list rows AND the desktop preview pane drive ONE DeploySheet.
+  const [focusedId, setFocusedId] = useState<number | null>(null);
+  const [deployTarget, setDeployTarget] = useState<DeploySignView | null>(null);
 
   // Sign ids touched by a not-yet-synced local action — shown as "syncing".
   const pendingSignIds = useMemo(() => {
@@ -55,6 +67,15 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
     return { claimable, myClaims, deployed, othersClaimedCount };
   }, [store.signs, store.activeCrewId]);
 
+  // Resolve the focused sign from the store each render so the preview reflects
+  // live claim/deploy state, not a stale snapshot taken at click time.
+  const focusedSign =
+    focusedId !== null ? (store.signs[focusedId] ?? null) : null;
+  const focusedCanDeploy =
+    !!focusedSign &&
+    focusedSign.status === "sorted" &&
+    focusedSign.claimedByCrewId === store.activeCrewId;
+
   return (
     <div className="space-y-4">
       <header className="flex items-center justify-between">
@@ -63,7 +84,7 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
           <span
             className={`inline-flex items-center gap-1 rounded-full px-2 py-1 ${
               store.online
-                ? "bg-zinc-800 text-zinc-300"
+                ? "bg-[var(--surface-2)] text-zinc-300"
                 : "bg-danger/20 text-danger"
             }`}
             aria-live="polite"
@@ -76,7 +97,7 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
             {store.online ? "Online" : "Offline"}
           </span>
           {store.pendingCount > 0 && (
-            <span className="rounded-full bg-zinc-800 px-2 py-1 text-zinc-400">
+            <span className="rounded-full bg-[var(--surface-2)] px-2 py-1 text-zinc-400">
               {store.pendingCount} queued
             </span>
           )}
@@ -84,7 +105,7 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
             type="button"
             onClick={() => void store.syncNow()}
             disabled={store.syncing || !store.online}
-            className="rounded-full border border-zinc-700 px-2 py-1 text-zinc-300 enabled:hover:bg-zinc-800 disabled:opacity-40"
+            className="btn btn-sm disabled:opacity-40"
           >
             {store.syncing ? "Syncing…" : "Sync"}
           </button>
@@ -92,7 +113,7 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
       </header>
 
       {store.bootError && (
-        <p className="rounded border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-400">
+        <p className="panel px-3 py-2 text-sm text-zinc-400">
           {store.bootError}
         </p>
       )}
@@ -112,12 +133,71 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
       )}
 
       <CrewBar store={store} />
-      <QueuePanel store={store} />
+      {/* Mobile keeps the sync queue inline near the top; desktop moves it into
+          the right rail beside the list (rendered below). */}
+      {isMobile && <QueuePanel store={store} />}
 
       {!store.loaded ? (
-        <p className="text-sm text-zinc-500">Loading the floor…</p>
+        // Client-side load (IndexedDB + bootstrap sync), so this is a skeleton
+        // inside the page, not a route-level loading.tsx. The sr-only status keeps
+        // the AT cue the old "Loading the floor…" text gave (Next's route
+        // announcer can't see this client-state load); the shimmer is aria-hidden.
+        // Shapes the search bar + sign rows the list will fill in.
+        <>
+          <span className="sr-only" role="status" aria-live="polite">
+            Loading the floor…
+          </span>
+          <div className="space-y-3" aria-hidden>
+            <Skeleton className="h-10 w-full rounded-lg" />
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-16 w-full rounded-lg" />
+            ))}
+          </div>
+        </>
+      ) : isMobile ? (
+        // onFocus is never called in the mobile layout (rows toggle selection,
+        // not focus) — wired only to satisfy the shared prop contract.
+        <SignList
+          buckets={buckets}
+          pendingSignIds={pendingSignIds}
+          store={store}
+          layout="mobile"
+          focusedId={null}
+          onFocus={setFocusedId}
+          onDeploy={setDeployTarget}
+        />
       ) : (
-        <SignList buckets={buckets} pendingSignIds={pendingSignIds} store={store} />
+        <div className="grid items-start gap-4 lg:grid-cols-[1fr_320px]">
+          <SignList
+            buckets={buckets}
+            pendingSignIds={pendingSignIds}
+            store={store}
+            layout="desktop"
+            focusedId={focusedId}
+            onFocus={setFocusedId}
+            onDeploy={setDeployTarget}
+          />
+          <div className="space-y-4 lg:sticky lg:top-4">
+            <QueuePanel store={store} />
+            <FocusPane
+              sign={focusedSign}
+              pending={focusedSign ? pendingSignIds.has(focusedSign.id) : false}
+              canDeploy={focusedCanDeploy}
+              onDeploy={setDeployTarget}
+            />
+          </div>
+        </div>
+      )}
+
+      {deployTarget && (
+        <DeploySheet
+          sign={deployTarget}
+          onCancel={() => setDeployTarget(null)}
+          onConfirm={(opts) => {
+            void store.deploy(deployTarget.id, opts);
+            setDeployTarget(null);
+          }}
+        />
       )}
     </div>
   );

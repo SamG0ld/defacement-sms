@@ -3,11 +3,14 @@ import Link from "next/link";
 import { getSession } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import type { SignStatus } from "@/app/generated/prisma/client";
+import { TelemetryGauge } from "@/app/_components/TelemetryGauge";
 
+import { DistBar } from "./signs/_components/DistBar";
 import {
   SIGN_STATUSES,
   pacificTodayUtc,
   statusBadgeClass,
+  statusLabel,
 } from "./signs/_lib";
 
 export default async function DashboardPage() {
@@ -25,38 +28,53 @@ export default async function DashboardPage() {
     }),
   ]);
 
-  const countOf = (s: SignStatus): number =>
-    grouped.find((g) => g.status === s)?._count._all ?? 0;
-  const deployed = countOf("deployed");
-  const pct = total > 0 ? Math.round((deployed / total) * 100) : 0;
+  const counts: Record<string, number> = {};
+  for (const g of grouped) counts[g.status] = g._count._all;
+  const countOf = (s: SignStatus): number => counts[s] ?? 0;
+  // Match the signs/top-strip telemetry: "deployed" is the two up terminals
+  // (deployed + externally installed).
+  const deployedUp = countOf("deployed") + countOf("installed");
+  const pct = total > 0 ? Math.round((deployedUp / total) * 100) : 0;
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-semibold">Dashboard</h1>
-        <p className="text-sm text-zinc-500">
-          Signed in as <strong>{session?.user?.email}</strong> (
-          {session?.user?.role}).
+    <div className="space-y-5">
+      {/* Header */}
+      <div>
+        <span className="prompt">DASHBOARD</span>
+        <h1 className="mt-1.5 text-[24px] font-extrabold tracking-tight">
+          Operations
+        </h1>
+        <p className="mt-1.5 flex items-center gap-2 text-sm text-zinc-500">
+          <span>
+            Signed in as{" "}
+            <strong className="text-zinc-300">{session?.user?.email}</strong>
+          </span>
+          {session?.user?.role && (
+            <span className="rolechip">{session.user.role}</span>
+          )}
         </p>
       </div>
 
-      {/* Deployment progress */}
-      <section className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-sm font-semibold text-zinc-300">
-            Deployment progress
-          </h2>
-          <span className="text-sm text-zinc-400">
-            {deployed} / {total} deployed ({pct}%)
+      {/* Deployment progress — telemetry gauge + workflow distribution */}
+      <div className="panel" style={{ padding: "15px 18px" }}>
+        <TelemetryGauge
+          deployed={deployedUp}
+          total={total}
+          pct={pct}
+          segments={40}
+        />
+        <div className="mt-3 flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <DistBar counts={counts} total={total} />
+          </div>
+          <span
+            className="whitespace-nowrap font-mono text-[10.5px]"
+            style={{ color: "var(--zinc-500)" }}
+          >
+            {SIGN_STATUSES.length} stages
           </span>
         </div>
-        <div className="h-2.5 w-full overflow-hidden rounded-full bg-zinc-800">
-          <div
-            className="h-full rounded-full bg-brand transition-all"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-      </section>
+      </div>
 
       {/* Status breakdown — each tile links to that filtered list */}
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
@@ -64,14 +82,15 @@ export default async function DashboardPage() {
           <Link
             key={s}
             href={`/signs?status=${s}`}
-            className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-4 hover:border-zinc-600"
+            className="panel flex flex-col gap-2 p-4 transition-colors hover:border-[var(--line-strong)]"
           >
-            <span
-              className={`inline-block rounded border px-2 py-0.5 text-[10px] uppercase ${statusBadgeClass(s)}`}
-            >
-              {s}
+            <span className={`badge ${statusBadgeClass(s)}`}>
+              {statusLabel(s)}
             </span>
-            <div className="text-2xl font-semibold text-zinc-100">
+            <div
+              className="font-mono text-2xl font-bold"
+              style={{ color: "var(--foreground)" }}
+            >
               {countOf(s)}
             </div>
           </Link>
@@ -82,25 +101,41 @@ export default async function DashboardPage() {
       <section className="grid grid-cols-2 gap-3">
         <Link
           href="/signs?due=today"
-          className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 p-4 hover:border-zinc-600"
+          className="panel flex flex-col gap-1 p-4 transition-colors hover:border-[var(--line-strong)]"
         >
-          <div className="text-xs uppercase tracking-wide text-zinc-500">
+          <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--zinc-500)]">
             Due today
           </div>
-          <div className="text-2xl font-semibold text-highlight">
+          <div
+            className="font-mono text-3xl font-bold"
+            style={{ color: "var(--highlight)" }}
+          >
             {dueToday}
           </div>
           <div className="text-xs text-zinc-500">not yet deployed</div>
         </Link>
         <Link
           href="/signs?due=overdue"
-          className="space-y-1 rounded-lg border border-zinc-800 bg-zinc-950 p-4 hover:border-zinc-600"
+          className="flex flex-col gap-1 rounded-xl border p-4 transition-colors"
+          style={
+            overdue > 0
+              ? {
+                  borderColor:
+                    "color-mix(in oklab, var(--danger) 50%, transparent)",
+                  background: "var(--surface)",
+                  boxShadow: "0 0 16px -6px var(--danger)",
+                }
+              : { borderColor: "var(--line)", background: "var(--surface)" }
+          }
         >
-          <div className="text-xs uppercase tracking-wide text-zinc-500">
+          <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--zinc-500)]">
             Overdue
           </div>
           <div
-            className={`text-2xl font-semibold ${overdue > 0 ? "text-danger" : "text-zinc-100"}`}
+            className="font-mono text-3xl font-bold"
+            style={{
+              color: overdue > 0 ? "var(--danger)" : "var(--foreground)",
+            }}
           >
             {overdue}
           </div>
@@ -108,10 +143,7 @@ export default async function DashboardPage() {
         </Link>
       </section>
 
-      <Link
-        href="/signs"
-        className="inline-block text-sm text-accent hover:underline"
-      >
+      <Link href="/signs" className="btn">
         View all signs →
       </Link>
     </div>

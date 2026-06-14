@@ -294,3 +294,51 @@ describe("full external lifecycle preserves earlier stamps", () => {
     expect(hist).toHaveLength(3);
   });
 });
+
+// H3: before the row-lock + in-tx re-check, a double-submit of the SAME
+// transition (the pre-tx guard only blocks moving *backward*) could write two
+// StatusHistory rows. These exercise the new in-tx idempotency guard.
+describe("lifecycle idempotency under retry (H3 — no duplicate history rows)", () => {
+  it("recordDelivery: a second delivery on an already-delivered sign is rejected, no duplicate row", async () => {
+    const s = await seedExternal();
+    await recordDelivery(s.id, fd({ receivedQty: "4" }));
+
+    const url = await captureRedirect(recordDelivery(s.id, fd({ receivedQty: "9" })));
+    expect(url).toContain("error=");
+
+    const after = await prisma.sign.findUnique({ where: { id: s.id } });
+    expect(after?.status).toBe("delivered");
+    expect(after?.receivedQty).toBe(4); // first write wins; the rejected retry didn't overwrite
+    const hist = await prisma.statusHistory.findMany({ where: { signId: s.id } });
+    expect(hist).toHaveLength(1);
+  });
+
+  it("recordHandoff: a second handoff on an already-handed-off sign is rejected, no duplicate row", async () => {
+    const s = await seedExternal({ status: "delivered" });
+    await recordHandoff(s.id, fd({ handedOffTo: "Union Local 720" }));
+
+    const url = await captureRedirect(
+      recordHandoff(s.id, fd({ handedOffTo: "Someone Else" })),
+    );
+    expect(url).toContain("error=");
+
+    const after = await prisma.sign.findUnique({ where: { id: s.id } });
+    expect(after?.status).toBe("handed_off");
+    expect(after?.handedOffTo).toBe("Union Local 720"); // unchanged by the rejected retry
+    const hist = await prisma.statusHistory.findMany({ where: { signId: s.id } });
+    expect(hist).toHaveLength(1);
+  });
+
+  it("confirmInstalled: a second confirm on an already-installed sign is rejected, no duplicate row", async () => {
+    const s = await seedExternal({ status: "handed_off" });
+    await confirmInstalled(s.id, fd({}));
+
+    const url = await captureRedirect(confirmInstalled(s.id, fd({ notes: "re-confirm" })));
+    expect(url).toContain("error=");
+
+    const after = await prisma.sign.findUnique({ where: { id: s.id } });
+    expect(after?.status).toBe("installed");
+    const hist = await prisma.statusHistory.findMany({ where: { signId: s.id } });
+    expect(hist).toHaveLength(1);
+  });
+});

@@ -58,9 +58,10 @@ export default async function MapPage({ searchParams }: Props) {
 
   return (
     <div className="space-y-6">
-      <div className="space-y-1">
-        <h1 className="text-2xl font-semibold">Maps</h1>
-        <p className="text-sm text-zinc-400">
+      <div>
+        <span className="prompt">MAP</span>
+        <h1 className="mt-1.5 text-[24px] font-extrabold tracking-tight">Maps</h1>
+        <p className="mt-1 text-sm text-zinc-400">
           Pick a floor, then add and place rooms on it. Positions are reused every
           year; signs in a room inherit its pin.
         </p>
@@ -73,14 +74,14 @@ export default async function MapPage({ searchParams }: Props) {
       )}
 
       {/* Floor management — tucked away; the day-to-day task is placing rooms. */}
-      <details open={manageOpen} className="rounded-lg border border-zinc-800 bg-zinc-950">
+      <details open={manageOpen} className="panel">
         <summary className="cursor-pointer select-none px-4 py-2.5 text-sm font-medium text-zinc-300 hover:text-zinc-100">
           Manage floors
           <span className="ml-2 text-xs font-normal text-zinc-500">
             upload · replace · rename · enable/disable · reorder
           </span>
         </summary>
-        <div className="grid gap-6 border-t border-zinc-800 p-4 lg:grid-cols-[1fr_320px]">
+        <div className="grid gap-6 border-t border-[var(--line)] p-4 lg:grid-cols-[1fr_320px]">
           {/* All floors (incl. disabled, so they can be re-enabled) */}
           <div className="space-y-3">
             {allMaps.length === 0 ? (
@@ -92,24 +93,18 @@ export default async function MapPage({ searchParams }: Props) {
                 {allMaps.map((m, i) => (
                   <li
                     key={m.id}
-                    className="flex gap-4 rounded-lg border border-zinc-800 bg-black/30 p-3"
+                    className="panel flex gap-4 p-3"
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element -- DB-served floorplan */}
                     <img
                       src={m.src}
                       alt={m.label}
-                      className="h-20 w-28 shrink-0 rounded border border-zinc-800 bg-white object-contain"
+                      className="h-20 w-28 shrink-0 rounded border border-[var(--line)] bg-white object-contain"
                     />
                     <div className="flex min-w-0 flex-1 flex-col gap-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium text-zinc-100">{m.label}</span>
-                        <span
-                          className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${
-                            m.enabled
-                              ? "bg-emerald-950 text-emerald-300"
-                              : "bg-zinc-800 text-zinc-500"
-                          }`}
-                        >
+                        <span className={m.enabled ? "badge badge-ok" : "badge"}>
                           {m.enabled ? "enabled" : "disabled"}
                         </span>
                       </div>
@@ -127,7 +122,7 @@ export default async function MapPage({ searchParams }: Props) {
                             type="submit"
                             disabled={i === 0}
                             aria-label="Move up"
-                            className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+                            className="btn btn-sm disabled:opacity-40"
                           >
                             ↑
                           </button>
@@ -139,7 +134,7 @@ export default async function MapPage({ searchParams }: Props) {
                             type="submit"
                             disabled={i === allMaps.length - 1}
                             aria-label="Move down"
-                            className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+                            className="btn btn-sm disabled:opacity-40"
                           >
                             ↓
                           </button>
@@ -150,7 +145,7 @@ export default async function MapPage({ searchParams }: Props) {
                           <input type="hidden" name="enabled" value={m.enabled ? "0" : "1"} />
                           <button
                             type="submit"
-                            className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                            className="btn btn-sm"
                           >
                             {m.enabled ? "Disable" : "Enable"}
                           </button>
@@ -165,11 +160,11 @@ export default async function MapPage({ searchParams }: Props) {
                             required
                             minLength={2}
                             maxLength={80}
-                            className="w-36 rounded border border-zinc-700 bg-black px-2 py-0.5 text-xs text-zinc-100"
+                            className="field w-36"
                           />
                           <button
                             type="submit"
-                            className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                            className="btn btn-sm"
                           >
                             Rename
                           </button>
@@ -186,7 +181,7 @@ export default async function MapPage({ searchParams }: Props) {
                           />
                           <button
                             type="submit"
-                            className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                            className="btn btn-sm"
                           >
                             Replace
                           </button>
@@ -200,7 +195,7 @@ export default async function MapPage({ searchParams }: Props) {
           </div>
 
           {/* Add a new floor */}
-          <form action={createFloorMap} className="h-fit space-y-3 rounded-lg border border-zinc-800 bg-black/30 p-4">
+          <form action={createFloorMap} className="panel h-fit space-y-3 p-4">
             <h2 className="text-sm font-semibold text-zinc-300">Add a floor</h2>
             <label className="flex flex-col gap-1 text-xs text-zinc-400">
               Name
@@ -211,7 +206,7 @@ export default async function MapPage({ searchParams }: Props) {
                 minLength={2}
                 maxLength={80}
                 placeholder="e.g. LVCC West — Hall 1"
-                className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600"
+                className="field"
               />
             </label>
             <label className="flex flex-col gap-1 text-xs text-zinc-400">
@@ -219,7 +214,7 @@ export default async function MapPage({ searchParams }: Props) {
               <select
                 name="zoneCode"
                 defaultValue=""
-                className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
+                className="field"
               >
                 <option value="">— none —</option>
                 {zones.map((z) => (
@@ -239,7 +234,7 @@ export default async function MapPage({ searchParams }: Props) {
                 className="text-xs text-zinc-400 file:mr-2 file:rounded file:border-0 file:bg-zinc-800 file:px-2 file:py-1 file:text-zinc-200"
               />
             </label>
-            <button type="submit" className="btn-primary w-full rounded px-3 py-1.5 text-sm font-medium">
+            <button type="submit" className="btn btn-primary w-full">
               Upload floor
             </button>
           </form>
@@ -249,16 +244,12 @@ export default async function MapPage({ searchParams }: Props) {
       {fm ? (
         <>
           {/* Floor tabs */}
-          <div className="flex flex-wrap items-center gap-1 border-b border-zinc-800">
+          <div className="chiprow">
             {enabled.map((m) => (
               <Link
                 key={m.key}
                 href={`/map?floor=${m.key}${manageOpen ? "&manage=1" : ""}`}
-                className={`rounded-t border-b-2 px-3 py-1.5 text-sm ${
-                  m.key === fm.key
-                    ? "border-accent text-zinc-100"
-                    : "border-transparent text-zinc-400 hover:text-zinc-200"
-                }`}
+                className={`chip${m.key === fm.key ? " active" : ""}`}
               >
                 {m.label}
               </Link>
@@ -307,7 +298,7 @@ export default async function MapPage({ searchParams }: Props) {
             <div className="space-y-4">
               <form
                 action={createRoom}
-                className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3"
+                className="panel space-y-2 p-3"
               >
                 <input type="hidden" name="floor" value={fm.key} />
                 <label className="flex flex-col gap-1 text-xs text-zinc-400">
@@ -317,19 +308,19 @@ export default async function MapPage({ searchParams }: Props) {
                     name="code"
                     required
                     placeholder="e.g. 229"
-                    className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600"
+                    className="field"
                   />
                 </label>
-                <button type="submit" className="btn-primary rounded px-3 py-1.5 text-sm font-medium">
+                <button type="submit" className="btn btn-primary">
                   Add room
                 </button>
               </form>
 
-              <div className="rounded-lg border border-zinc-800">
-                <div className="border-b border-zinc-800 px-3 py-2 text-xs uppercase text-zinc-500">
+              <div className="panel overflow-hidden">
+                <div className="border-b border-[var(--line)] px-3 py-2 text-xs uppercase text-zinc-500">
                   Rooms ({placed.length}/{rooms.length} placed)
                 </div>
-                <ul className="divide-y divide-zinc-800">
+                <ul className="divide-y divide-[var(--line)]">
                   {rooms.length === 0 ? (
                     <li className="px-3 py-3 text-sm text-zinc-500">
                       No rooms yet — add one above.
@@ -345,14 +336,14 @@ export default async function MapPage({ searchParams }: Props) {
                           <span className="font-mono text-zinc-200">
                             {r.locationCode}
                             <span
-                              className={`ml-2 text-[10px] uppercase ${isPlaced ? "text-emerald-400" : "text-zinc-600"}`}
+                              className={`ml-2 text-[10px] uppercase ${isPlaced ? "text-[var(--accent)]" : "text-zinc-600"}`}
                             >
                               {isPlaced ? "● placed" : "○ unplaced"}
                             </span>
                           </span>
                           <Link
                             href={`/map?floor=${fm.key}&room=${r.id}`}
-                            className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                            className="btn btn-sm"
                           >
                             {isPlaced ? "move" : "place"}
                           </Link>

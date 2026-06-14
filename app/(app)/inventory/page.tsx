@@ -139,9 +139,12 @@ export default async function InventoryPage({
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold">Inventory &amp; counts</h1>
-          <p className="text-sm text-zinc-400">
+        <div>
+          <span className="prompt">INVENTORY</span>
+          <h1 className="mt-1.5 text-[24px] font-extrabold tracking-tight">
+            Inventory &amp; counts
+          </h1>
+          <p className="mt-1 text-sm text-zinc-400">
             What to print (live), hardware need vs. have, consumables, and
             year-over-year history.
           </p>
@@ -154,7 +157,7 @@ export default async function InventoryPage({
               <select
                 name="year"
                 defaultValue={String(year)}
-                className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
+                className="field"
               >
                 {years.map((y) => (
                   <option key={y} value={String(y)}>
@@ -163,21 +166,14 @@ export default async function InventoryPage({
                 ))}
               </select>
             </label>
-            <button
-              type="submit"
-              className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
-            >
+            <button type="submit" className="btn">
               View
             </button>
           </form>
           {canManage && (
             <a
               href={edit ? baseHref : `${baseHref}&edit=1`}
-              className={
-                edit
-                  ? "btn-primary rounded px-3 py-1.5 text-sm font-medium"
-                  : "rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
-              }
+              className={edit ? "btn btn-primary" : "btn"}
             >
               {edit ? "Done editing" : "Edit counts"}
             </a>
@@ -193,7 +189,7 @@ export default async function InventoryPage({
 
       {/* Actionable rollup: what to buy. View mode only. */}
       {!edit && toOrder.length > 0 && (
-        <div className="rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-300">
+        <div className="panel px-4 py-3 text-sm text-zinc-300">
           <span className="font-medium text-[var(--danger)]">To order:</span>{" "}
           {toOrder
             .map(
@@ -207,7 +203,7 @@ export default async function InventoryPage({
       {edit && (
         <form
           action={addEquipmentType}
-          className="flex flex-wrap items-end gap-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4"
+          className="panel flex flex-wrap items-end gap-3 p-4"
         >
           <input type="hidden" name="year" value={year} />
           <label className="flex flex-col gap-1 text-xs text-zinc-400">
@@ -216,7 +212,7 @@ export default async function InventoryPage({
               name="name"
               required
               placeholder="e.g. Spider Easels"
-              className="w-56 rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600"
+              className="field w-56"
             />
           </label>
           <label className="flex flex-col gap-1 text-xs text-zinc-400">
@@ -224,7 +220,7 @@ export default async function InventoryPage({
             <select
               name="category"
               defaultValue="Consumable"
-              className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
+              className="field"
             >
               {CATEGORY_OPTIONS.map((c) => (
                 <option key={c} value={c}>
@@ -233,10 +229,7 @@ export default async function InventoryPage({
               ))}
             </select>
           </label>
-          <button
-            type="submit"
-            className="btn-primary rounded px-3 py-1.5 text-sm font-medium"
-          >
+          <button type="submit" className="btn btn-primary">
             Add item
           </button>
         </form>
@@ -265,7 +258,7 @@ export default async function InventoryPage({
             <form action={recordSignMaterialHistory.bind(null, year)}>
               <button
                 type="submit"
-                className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                className="btn btn-sm"
                 title={`Snapshot the current ${summary.totalSigns} signs' material totals into ${conLabelForYear(year)} history`}
               >
                 Record {conLabelForYear(year)} sign totals → history

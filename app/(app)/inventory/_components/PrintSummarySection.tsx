@@ -8,7 +8,7 @@ export function PrintSummarySection({ summary }: { summary: PrintSummary }) {
   const max = Math.max(1, ...summary.materials.map((m) => m.total));
 
   return (
-    <section className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4">
+    <section className="panel space-y-3 p-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-sm font-semibold text-zinc-300">
           Print summary{" "}
@@ -51,7 +51,7 @@ export function PrintSummarySection({ summary }: { summary: PrintSummary }) {
                   style={{ width: `${Math.round((m.total / max) * 100)}%` }}
                 />
               </div>
-              <div className="w-28 shrink-0 text-right tabular-nums text-zinc-200">
+              <div className="w-28 shrink-0 text-right font-mono tabular-nums text-zinc-200">
                 {m.total}
                 {m.double > 0 && (
                   <span className="text-xs text-zinc-500">

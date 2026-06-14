@@ -582,6 +582,11 @@ model AuditLog {
   actorId    String?  @map("actor_id")
   actorEmail String?  @map("actor_email")
   detail     String?
+  // Login-event context (auth.login / auth.denied only; null for admin events).
+  // No raw IP is ever stored — location is a coarse "City, CC" derived from
+  // Vercel's edge geo headers; userAgent is the raw UA string, formatted at render.
+  userAgent  String?  @map("user_agent")
+  location   String?
   createdAt  DateTime @default(now()) @map("created_at")
 
   @@index([createdAt])

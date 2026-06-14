@@ -13,11 +13,13 @@ type LoginPageProps = {
 function errorMessage(code: string): string {
   switch (code) {
     case "AccessDenied":
-      return "Your account is not authorized. Ask an admin for an invite.";
+      return "Your account isn’t authorized. Make sure you’re using the exact email an admin added you with — or ask an admin for an invite.";
     case "EmailSignin":
       return "Couldn't send the sign-in link. Please try again.";
     case "Verification":
       return "That sign-in link is invalid or has expired. Request a new one.";
+    case "Configuration":
+      return "We hit a temporary problem signing you in. Please try again in a moment.";
     default:
       return "Sign in failed. Please try again.";
   }

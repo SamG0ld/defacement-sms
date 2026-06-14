@@ -1,36 +1,10 @@
 import type { NextConfig } from "next";
 
-// Content Security Policy — emitted as enforcing or report-only based on
-// CSP_MODE (defaults: enforce in production, report in dev). Start a fresh
-// deploy with CSP_MODE=report, watch for violations, then flip to enforce.
-//
-// Allowlist rationale:
-//   - script-src 'self' + 'unsafe-inline': Next.js ships hydration scripts inline.
-//     Switch to nonces once we bake them into the response.
-//   - style-src 'self' + 'unsafe-inline': Tailwind v4 inlines critical CSS.
-//   - img-src lh3.googleusercontent.com: Google profile pictures from OAuth.
-//   - connect-src accounts.google.com: OAuth XHR.
-//   - frame-src accounts.google.com: OAuth popup/iframe.
-//   - form-action accounts.google.com: OAuth form posts.
-const CSP_DIRECTIVES = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: https://lh3.googleusercontent.com",
-  "font-src 'self' data:",
-  "connect-src 'self' https://accounts.google.com",
-  "frame-src 'self' https://accounts.google.com",
-  "frame-ancestors 'none'",
-  "form-action 'self' https://accounts.google.com",
-  "base-uri 'self'",
-  "object-src 'none'",
-  // PWA: allow our own service worker (public/sw.js) and web app manifest. Both
-  // are same-origin; default-src 'self' would cover them, but Chromium gates the
-  // SW on worker-src specifically, so it must be explicit.
-  "worker-src 'self'",
-  "manifest-src 'self'",
-].join("; ");
-
+// Static security response headers. NOTE: the Content-Security-Policy is NOT set
+// here — it needs a per-request nonce, so it's built in lib/csp.ts and emitted by
+// proxy.ts on every HTML route. Keeping CSP in exactly one place avoids the browser
+// intersecting two competing CSP headers (which would silently re-block scripts).
+// Everything below is static and safe to emit on every route.
 const SECURITY_HEADERS = [
   // Force HTTPS for 2 years; preload-eligible. No effect over http://, so
   // local dev is unaffected.
@@ -47,20 +21,8 @@ const SECURITY_HEADERS = [
     value:
       "camera=(), microphone=(), geolocation=(), interest-cohort=(), payment=(), usb=()",
   },
-];
-
-// enforce in production by default; report-only in dev. Override with CSP_MODE.
-const cspMode =
-  process.env.CSP_MODE ??
-  (process.env.NODE_ENV === "production" ? "enforce" : "report");
-const cspHeaderKey =
-  cspMode === "enforce"
-    ? "Content-Security-Policy"
-    : "Content-Security-Policy-Report-Only";
-
-const ALL_HEADERS = [
-  ...SECURITY_HEADERS,
-  { key: cspHeaderKey, value: CSP_DIRECTIVES },
+  // Named endpoint for the CSP `report-to csp-endpoint` directive (set in lib/csp.ts).
+  { key: "Reporting-Endpoints", value: 'csp-endpoint="/api/csp-report"' },
 ];
 
 const nextConfig: NextConfig = {
@@ -78,7 +40,7 @@ const nextConfig: NextConfig = {
     return [
       {
         source: "/:path*",
-        headers: ALL_HEADERS,
+        headers: SECURITY_HEADERS,
       },
       {
         // The service worker must be served as JS and never cached, so a new

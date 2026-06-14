@@ -319,9 +319,28 @@ export function formatDateOnly(d: Date | null | undefined): string {
   }).format(d);
 }
 
+// Human-readable label per workflow stage (Title-case, "Handed off" not the raw
+// enum). Drives the filter chips + any status display that wants a friendly label
+// instead of the snake_case enum value.
+export const STATUS_LABELS: Record<SignStatus, string> = {
+  pending: "Pending",
+  generated: "Generated",
+  printed: "Printed",
+  delivered: "Delivered",
+  sorted: "Sorted",
+  deployed: "Deployed",
+  handed_off: "Handed off",
+  installed: "Installed",
+};
+
+export function statusLabel(status: SignStatus): string {
+  return STATUS_LABELS[status] ?? status;
+}
+
 // One themed badge class per workflow stage. The colors come from the per-year
 // --status-* tokens (see app/theme.css / globals.css `.badge-*`), so badges
-// re-theme with the con. Pair with `rounded border px-2 py-0.5 text-xs`.
+// re-theme with the con. Compose with the `.badge` base class (`badge badge-<s>`)
+// for the dotted console badge, or pair with `rounded border px-2 py-0.5 text-xs`.
 export function statusBadgeClass(status: SignStatus): string {
   switch (status) {
     case "pending":

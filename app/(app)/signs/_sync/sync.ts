@@ -43,9 +43,11 @@ async function processEntry(
   acc: DrainResult,
 ): Promise<Outcome> {
   try {
-    // Any 2xx result — applied, duplicate, noop, or not_found — means the change
-    // reached the server and was resolved; there's nothing left to replay, so the
-    // entry is done. (not_found: the sign was deleted server-side; drop it.)
+    // Any 2xx result — applied, duplicate, noop, not_found, or forbidden — means
+    // the change reached the server and was resolved; there's nothing left to
+    // replay, so the entry is done. (not_found: the sign was deleted server-side;
+    // forbidden: the server rejected the change, e.g. a volunteer move that needs
+    // a claim — either way, drop it rather than replay forever.)
     await postSignStatus({
       clientId: entry.clientId,
       signId: entry.signId,
@@ -107,9 +109,9 @@ export async function drainOutbox(): Promise<DrainResult> {
       });
       const byClientId = new Map(res.results.map((r) => [r.clientId, r]));
       for (const entry of chunk) {
-        // Any echoed result — applied, duplicate, noop, or not_found — means
-        // the change was resolved server-side; nothing left to replay. A result
-        // the server didn't echo stays pending for the next drain.
+        // Any echoed result — applied, duplicate, noop, not_found, or forbidden
+        // — means the change was resolved server-side; nothing left to replay. A
+        // result the server didn't echo stays pending for the next drain.
         if (!byClientId.has(entry.clientId)) continue;
         await deleteEntry(entry.clientId);
         acc.drained += 1;

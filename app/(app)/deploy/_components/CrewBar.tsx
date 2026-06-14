@@ -15,7 +15,7 @@ export function CrewBar({ store }: { store: DeployStore }) {
   const otherCrews = store.crews.filter((c) => !store.myCrewIds.includes(c.id));
 
   return (
-    <section className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+    <section className="panel space-y-3 p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-xs uppercase tracking-wide text-zinc-500">
           Acting as
@@ -28,11 +28,11 @@ export function CrewBar({ store }: { store: DeployStore }) {
               key={c.id}
               type="button"
               onClick={() => store.setActiveCrew(c.id)}
-              className={`rounded-full px-3 py-1 text-sm ${
+              className={
                 store.activeCrewId === c.id
-                  ? "bg-brand text-white"
-                  : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800"
-              }`}
+                  ? "btn btn-sm btn-primary"
+                  : "btn btn-sm"
+              }
             >
               {c.name}
               <span className="ml-1 text-xs opacity-70">
@@ -60,12 +60,9 @@ export function CrewBar({ store }: { store: DeployStore }) {
             onChange={(e) => setName(e.target.value)}
             placeholder="New crew name"
             maxLength={80}
-            className="flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600"
+            className="field flex-1"
           />
-          <button
-            type="submit"
-            className="btn-primary rounded px-3 py-1.5 text-sm"
-          >
+          <button type="submit" className="btn btn-primary">
             Start
           </button>
         </form>
@@ -85,7 +82,7 @@ export function CrewBar({ store }: { store: DeployStore }) {
             <select
               value={joinId}
               onChange={(e) => setJoinId(e.target.value)}
-              className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100"
+              className="field"
             >
               <option value="">Join a crew…</option>
               {otherCrews.map((c) => (
@@ -97,7 +94,7 @@ export function CrewBar({ store }: { store: DeployStore }) {
             <button
               type="submit"
               disabled={!joinId}
-              className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 enabled:hover:bg-zinc-800 disabled:opacity-40"
+              className="btn disabled:opacity-40"
             >
               Join
             </button>

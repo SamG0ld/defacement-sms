@@ -26,7 +26,7 @@ export function DeploySheet({
       onClick={onCancel}
     >
       <div
-        className="w-full max-w-md space-y-4 rounded-t-2xl border border-zinc-800 bg-zinc-950 p-4 sm:rounded-2xl"
+        className="w-full max-w-md space-y-4 rounded-t-2xl border border-[var(--line)] bg-[var(--surface)] p-4 sm:rounded-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div>
@@ -47,7 +47,7 @@ export function DeploySheet({
             rows={2}
             maxLength={2000}
             placeholder="e.g. mounted by north entrance"
-            className="w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600"
+            className="field w-full"
           />
         </label>
 
@@ -73,7 +73,7 @@ export function DeploySheet({
           <button
             type="button"
             onClick={onCancel}
-            className="flex-1 rounded border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800"
+            className="btn flex-1 justify-center"
           >
             Cancel
           </button>
@@ -85,7 +85,7 @@ export function DeploySheet({
                 photo: photo ?? undefined,
               })
             }
-            className="btn-primary flex-1 rounded px-3 py-2 text-sm font-medium"
+            className="btn btn-primary flex-1 justify-center"
           >
             Mark deployed
           </button>

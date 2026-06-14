@@ -16,9 +16,13 @@ import { buildSearchHref } from "../_lib";
 export function SearchField({
   defaultValue,
   otherParams,
+  className,
 }: {
   defaultValue: string;
   otherParams: string;
+  // When provided, replaces the default styling — pass "" to let a parent
+  // `.searchbox` style the input. Defaults to the standalone field styling.
+  className?: string;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -55,9 +59,12 @@ export function SearchField({
       name="q"
       value={value}
       onChange={(e) => setValue(e.target.value)}
-      placeholder="text / item / area"
+      placeholder="search text · id · area"
       aria-label="Search signs by text, item ID, or area"
-      className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600"
+      className={
+        className ??
+        "rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600"
+      }
     />
   );
 }
