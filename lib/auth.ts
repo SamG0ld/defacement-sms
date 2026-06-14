@@ -4,7 +4,11 @@ import Resend from "next-auth/providers/resend";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 
 import { prisma } from "@/lib/db";
+import { withDbRetry } from "@/lib/db-retry";
+import { logError } from "@/lib/log";
+import { recordAudit } from "@/lib/audit";
 import { canReceiveMagicLink, sendMagicLinkEmail } from "@/lib/email";
+import { captureRequestContext } from "@/lib/request-context";
 import type { UserRole } from "@/app/generated/prisma/client";
 
 declare module "next-auth" {
@@ -28,11 +32,22 @@ declare module "next-auth/jwt" {
 }
 
 // How often the JWT callback re-reads the user from the database to pick up
-// role changes, deactivation, and tokenVersion bumps. 1h bounds the kill-switch
-// / role-change propagation latency (AR-3) — a lost shared phone or a demoted
-// account loses access within the hour of its next request — while costing only
-// ~one DB read per active session per hour, negligible at this team size.
-const REFRESH_INTERVAL_MS = 60 * 60 * 1000;
+// role changes, deactivation, and tokenVersion bumps. Reduced to 15 min for
+// DEF CON: a lost phone or demoted account loses access within 15 minutes of
+// the next request — much tighter kill-switch propagation than the previous 1h
+// window, while still costing only ~four DB reads per active session per hour,
+// negligible at this team size. Raise to 60 * 60 * 1000 post-con if the
+// extra DB load ever becomes a concern.
+const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+
+// When a refresh hits a transient DB failure we keep the session (fail-soft) and
+// schedule the next kill-switch re-check this far out — rather than leaving the
+// token stale, which would make EVERY subsequent request re-hit the DB (and pay
+// the connect-retry stall) during a sustained outage. Far shorter than the 15-min
+// window, so a revoked/demoted account is still re-validated quickly once the DB
+// recovers; the only cost is the kill-switch staying paused for at most this long
+// into an active outage — when the DB is unreachable and can't enforce it anyway.
+const SOFT_FAIL_RECHECK_MS = 60 * 1000;
 
 // First-admin bootstrap. Emails listed in BOOTSTRAP_ADMIN_EMAILS may
 // self-provision as admin on first Google sign-in — the minimal unblock before
@@ -42,6 +57,17 @@ function isBootstrapAdmin(email: string): boolean {
     .split(",")
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);
+  // Warn loudly if this var is still set in production — it's a footgun that
+  // should be cleared once real admins exist. Runs on every call that reaches
+  // this path (sign-in), which is rare enough to not be noisy.
+  if (process.env.NODE_ENV === "production" && list.length > 0) {
+    console.warn(
+      "[auth] BOOTSTRAP_ADMIN_EMAILS is still set in production (%d address%s). " +
+        "Clear it once you have at least one confirmed admin.",
+      list.length,
+      list.length === 1 ? "" : "es",
+    );
+  }
   return list.includes(email.toLowerCase());
 }
 
@@ -52,8 +78,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // 7 days. Shared phones at DEF CON shouldn't carry a 30-day session.
     maxAge: 7 * 24 * 60 * 60,
     // Rotate the cookie at least daily. The jwt callback re-reads the DB within
-    // REFRESH_INTERVAL_MS (1h) of an active user's next request, so a
-    // tokenVersion / isActive / role change propagates within the hour.
+    // REFRESH_INTERVAL_MS (15 min) of an active user's next request, so a
+    // tokenVersion / isActive / role change propagates within 15 minutes.
     updateAge: 24 * 60 * 60,
   },
   providers: [
@@ -117,6 +143,29 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     async signIn({ user, account, profile }) {
       if (!user.email) return false;
 
+      // Normalize: stored rows are lowercased (addUser / seeds), but OAuth can
+      // return mixed case. Compare case-insensitively or the gate + kill-switch
+      // silently disagree with the jwt callback.
+      const email = user.email.toLowerCase();
+      const provider = account?.provider;
+
+      // Best-effort denial audit: record a rejected sign-in (auth.denied) with
+      // the reason + coarse location/device, then return false. Never throws —
+      // recordAudit and captureRequestContext both swallow their own errors, so
+      // logging can't turn a rejection into a 500.
+      const deny = async (reason: string): Promise<false> => {
+        const ctx = await captureRequestContext();
+        await recordAudit({
+          action: "auth.denied",
+          // Attacker-asserted on a rejected attempt — bound length (RFC 5321 max).
+          actorEmail: email.slice(0, 320),
+          detail: `${provider ?? "unknown"} · ${reason}`,
+          userAgent: ctx.userAgent,
+          location: ctx.location,
+        });
+        return false;
+      };
+
       // allowDangerousEmailAccountLinking links a Google login to a pre-created
       // User row purely by matching email. Require Google to have VERIFIED that
       // email, so a pre-provisioned row (possibly admin) can't be hijacked by an
@@ -124,14 +173,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // trusting the provider.
       const emailVerified = (profile as { email_verified?: boolean } | undefined)
         ?.email_verified;
-      if (account?.provider === "google" && emailVerified === false) {
-        return false;
+      if (provider === "google" && emailVerified === false) {
+        return deny("email unverified");
       }
-
-      // Normalize: stored rows are lowercased (addUser / seeds), but OAuth can
-      // return mixed case. Compare case-insensitively or the gate + kill-switch
-      // silently disagree with the jwt callback.
-      const email = user.email.toLowerCase();
 
       // Closed registration. NextAuth's Prisma adapter will auto-create a User
       // row on first OAuth sign-in using schema defaults (role=volunteer,
@@ -148,14 +192,20 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // Google-only. A link is only ever mailed to an existing active user
       // (see the Resend provider's sendVerificationRequest), so this is
       // defense-in-depth: require the active row, no bootstrap branch.
-      if (account?.provider === "resend") {
-        return !!existing && existing.isActive;
+      if (provider === "resend") {
+        if (!existing) return deny("not on team");
+        if (!existing.isActive) return deny("deactivated");
+        return true;
       }
 
       // No row yet: only a configured bootstrap admin may self-provision.
-      if (!existing) return isBootstrapAdmin(email);
+      if (!existing) {
+        if (isBootstrapAdmin(email)) return true;
+        return deny("not on team");
+      }
       // Existing account: must still be active.
-      return existing.isActive;
+      if (!existing.isActive) return deny("deactivated");
+      return true;
     },
     async redirect({ url, baseUrl }) {
       // Open-redirect protection: anything passed via ?callbackUrl= must be
@@ -192,16 +242,58 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
       if (!needsRefresh) return token;
 
-      const dbUser = await prisma.user.findUnique({
-        where: { email },
-        select: {
-          id: true,
-          role: true,
-          isActive: true,
-          tokenVersion: true,
-          firstLoginAt: true,
-        },
-      });
+      // An actual authentication (signIn/signUp, or the initial token build) vs.
+      // a plain staleness/`update` refresh. The distinction drives how a DB
+      // outage is handled in the catch below.
+      const isSignIn =
+        trigger === "signIn" || trigger === "signUp" || isInitial;
+
+      // Resilience: a Neon scale-to-zero cold start can refuse / time out the
+      // first connection after idle. withDbRetry retries that transient blip once
+      // (the first attempt wakes the compute, the retry lands warm). A failure
+      // that survives the retry is an infra outage — NOT an authoritative "no
+      // such user" — so it must not be mistaken for a deactivation.
+      let dbUser: {
+        id: string;
+        role: UserRole;
+        isActive: boolean;
+        tokenVersion: number;
+        firstLoginAt: Date | null;
+      } | null;
+      try {
+        dbUser = await withDbRetry(
+          () =>
+            prisma.user.findUnique({
+              where: { email },
+              select: {
+                id: true,
+                role: true,
+                isActive: true,
+                tokenVersion: true,
+                firstLoginAt: true,
+              },
+            }),
+          { scope: "auth.jwt.findUser" },
+        );
+      } catch (err) {
+        logError("auth.jwt.db-unavailable", err, {
+          phase: isSignIn ? "signin" : "refresh",
+        });
+        // Sign-in: there's no established session to preserve, and minting a
+        // half-built token would wedge the user. Surface the failure so NextAuth
+        // routes to the login error screen — a retry usually lands once warm.
+        if (isSignIn) throw err;
+        // Refresh of an already-valid session: fail SOFT — keep the user signed in
+        // through the blip. Nudge lastChecked forward so the kill-switch re-checks
+        // after SOFT_FAIL_RECHECK_MS instead of on every request (which would stall
+        // each page load on the connect-retry during a sustained outage), while
+        // still re-validating far sooner than the normal 1h staleness window once
+        // Neon recovers. A transient blip must not sign out the whole team mid-floor.
+        return {
+          ...token,
+          lastChecked: Date.now() - REFRESH_INTERVAL_MS + SOFT_FAIL_RECHECK_MS,
+        };
+      }
 
       if (!dbUser || !dbUser.isActive) {
         return { ...token, isActive: false };
@@ -226,8 +318,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // is present on the initial sign-in — the only time firstLoginAt is null
       // and promotion can fire.
       let role = dbUser.role;
-      const isSignIn =
-        trigger === "signIn" || trigger === "signUp" || isInitial;
       const promote =
         role !== "admin" &&
         isBootstrapAdmin(email) &&
@@ -237,18 +327,51 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
       // Single write on actual sign-in: stamp login timestamps and apply any
       // bootstrap promotion. Background staleness refreshes don't touch these.
+      // Best-effort: a failed write must not fail an otherwise-valid sign-in. The
+      // promotion still applies to THIS token via `role`; an unpersisted promote
+      // simply re-fires next login (firstLoginAt stays null), so it converges.
       if (isSignIn || promote) {
-        await prisma.user.update({
-          where: { id: dbUser.id },
-          data: {
-            ...(promote ? { role: "admin" as const } : {}),
-            ...(isSignIn
-              ? {
-                  lastLoginAt: new Date(),
-                  ...(dbUser.firstLoginAt ? {} : { firstLoginAt: new Date() }),
-                }
-              : {}),
-          },
+        const userId = dbUser.id;
+        const hadFirstLogin = dbUser.firstLoginAt;
+        try {
+          await withDbRetry(
+            () =>
+              prisma.user.update({
+                where: { id: userId },
+                data: {
+                  ...(promote ? { role: "admin" as const } : {}),
+                  ...(isSignIn
+                    ? {
+                        lastLoginAt: new Date(),
+                        ...(hadFirstLogin ? {} : { firstLoginAt: new Date() }),
+                      }
+                    : {}),
+                },
+              }),
+            { scope: "auth.jwt.loginStamp" },
+          );
+        } catch (err) {
+          logError("auth.jwt.login-stamp-failed", err, { userId });
+        }
+      }
+
+      // Login audit (best-effort): one auth.login row per genuine sign-in, with
+      // coarse location (Vercel geo headers) + device. Gated on isSignIn
+      // (trigger signIn/signUp, or isInitial — a token populated for the first
+      // time); the hourly staleness refresh always carries userId, so it never
+      // reaches here. Narrower than the user.update guard above (isSignIn ||
+      // promote) on purpose: promote can only fire on the first-ever login, when
+      // isSignIn is already true, so no login is missed. No raw IP captured; runs
+      // in the NextAuth Node route handler, so headers() resolves.
+      if (isSignIn) {
+        const ctx = await captureRequestContext();
+        await recordAudit({
+          action: "auth.login",
+          actorId: dbUser.id,
+          actorEmail: email,
+          detail: account?.provider === "resend" ? "magic-link" : account?.provider ?? "session",
+          userAgent: ctx.userAgent,
+          location: ctx.location,
         });
       }
 

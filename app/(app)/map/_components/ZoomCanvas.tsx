@@ -3,8 +3,9 @@
 import type { ReactNode } from "react";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 
-const BTN =
-  "rounded bg-black/60 px-2 py-0.5 text-sm text-zinc-100 ring-1 ring-white/20 hover:bg-black/80";
+// Shared console button so the controls inherit the Phase-4 press + focus-visible
+// feedback. Rendered over the (white) floor image; the dark .btn surface reads fine.
+const BTN = "btn btn-sm";
 
 // Reusable zoom/pan frame for the floor maps. Wraps its children (a relative
 // image + pin layer) so the whole thing scales/translates together — pins,

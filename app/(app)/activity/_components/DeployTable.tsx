@@ -23,81 +23,79 @@ export type DeployRow = {
 export function DeployTable({ rows }: { rows: DeployRow[] }) {
   if (rows.length === 0) {
     return (
-      <p className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-6 text-center text-sm text-zinc-500">
-        No deploy events recorded yet.
+      <p className="panel px-3 py-6 text-center font-mono text-sm text-[var(--zinc-500)]">
+        {"// no deploy events recorded yet"}
       </p>
     );
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border border-zinc-800">
-      <table className="w-full text-sm">
-        <thead className="bg-zinc-950 text-left text-xs uppercase text-zinc-500">
-          <tr>
-            <th className="px-3 py-2 font-medium">When</th>
-            <th className="px-3 py-2 font-medium">Sign</th>
-            <th className="px-3 py-2 font-medium">Result</th>
-            <th className="px-3 py-2 font-medium">By</th>
-            <th className="px-3 py-2 font-medium">Notes</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-zinc-800">
-          {rows.map((r) => (
-            <tr key={r.id} className="text-zinc-200">
-              <td className="whitespace-nowrap px-3 py-2 text-xs text-zinc-400">
-                {formatDateTime(r.deployedAt)}
-              </td>
-              <td className="px-3 py-2">
-                {r.sign ? (
-                  <Link
-                    href={`/signs/${r.sign.id}`}
-                    className="text-accent hover:underline"
-                  >
-                    {r.sign.itemId}
-                    {r.sign.signText ? (
-                      <span className="ml-2 text-xs text-zinc-500">
-                        {r.sign.signText}
-                      </span>
-                    ) : null}
-                  </Link>
-                ) : (
-                  <span className="text-zinc-500">(deleted sign #{r.signId})</span>
-                )}
-              </td>
-              <td className="whitespace-nowrap px-3 py-2 text-xs">
-                <span
-                  className={
-                    r.status === "applied"
-                      ? "badge-deployed rounded border px-2 py-0.5"
-                      : "rounded border border-zinc-700 px-2 py-0.5 text-zinc-400"
-                  }
-                >
-                  {r.status}
-                </span>
-                {r.hasPhoto ? (
-                  // THIS event's photo (keyed by clientId), not the sign's
-                  // current photo — a later deploy of the same sign must not
-                  // rewrite what this after-action row shows.
-                  <Link
-                    href={`/api/native/deploys/${r.clientId}/photo`}
-                    className="ml-2 text-accent hover:underline"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    photo
-                  </Link>
-                ) : null}
-              </td>
-              <td className="px-3 py-2 text-zinc-300">
-                {r.deployedByEmail ?? "—"}
-              </td>
-              <td className="max-w-xs truncate px-3 py-2 text-xs text-zinc-400">
-                {r.notes ?? ""}
-              </td>
+    <div className="panel overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="datatable">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Sign</th>
+              <th>Result</th>
+              <th>By</th>
+              <th>Notes</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id}>
+                <td className="t-mono whitespace-nowrap">
+                  {formatDateTime(r.deployedAt)}
+                </td>
+                <td>
+                  {r.sign ? (
+                    <Link
+                      href={`/signs/${r.sign.id}`}
+                      className="t-id hover:underline"
+                    >
+                      {r.sign.itemId}
+                      {r.sign.signText ? (
+                        <span className="ml-2 t-dim">{r.sign.signText}</span>
+                      ) : null}
+                    </Link>
+                  ) : (
+                    <span style={{ color: "var(--zinc-500)" }}>
+                      (deleted sign #{r.signId})
+                    </span>
+                  )}
+                </td>
+                <td className="whitespace-nowrap">
+                  <span
+                    className={
+                      r.status === "applied"
+                        ? "badge badge-deployed"
+                        : "badge"
+                    }
+                  >
+                    {r.status}
+                  </span>
+                  {r.hasPhoto ? (
+                    // THIS event's photo (keyed by clientId), not the sign's
+                    // current photo — a later deploy of the same sign must not
+                    // rewrite what this after-action row shows.
+                    <Link
+                      href={`/api/native/deploys/${r.clientId}/photo`}
+                      className="ml-2 text-accent hover:underline"
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      photo
+                    </Link>
+                  ) : null}
+                </td>
+                <td className="t-dim">{r.deployedByEmail ?? "—"}</td>
+                <td className="t-dim max-w-xs truncate">{r.notes ?? ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

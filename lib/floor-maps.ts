@@ -75,8 +75,9 @@ export async function zoneCodeForFloorKey(
 }
 
 // Admin manager row: every floor map (incl. disabled), with metadata for the
-// "Manage floors" UI on /map. No image bytes — the thumbnail loads via the image route.
-export type FloorMapAdminRow = {
+// "Manage floors" UI on /map. Not exported — callers use type inference from
+// getAllFloorMaps(); no external code names this type directly.
+type FloorMapAdminRow = {
   id: number;
   key: string;
   label: string;

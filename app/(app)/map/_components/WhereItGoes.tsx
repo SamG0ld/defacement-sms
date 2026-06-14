@@ -51,7 +51,7 @@ export async function WhereItGoes({
       : [];
 
   return (
-    <section className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4">
+    <section className="panel space-y-3 p-4">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-zinc-300">Where it goes</h2>
         {resolved && (
@@ -126,7 +126,7 @@ export async function WhereItGoes({
                       name="locationId"
                       defaultValue=""
                       required
-                      className="rounded border border-zinc-700 bg-black px-2 py-1.5 text-sm text-zinc-100"
+                      className="field"
                     >
                       <option value="" disabled>
                         choose room…
@@ -138,10 +138,7 @@ export async function WhereItGoes({
                       ))}
                     </select>
                   </label>
-                  <button
-                    type="submit"
-                    className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
-                  >
+                  <button type="submit" className="btn">
                     Use room
                   </button>
                 </form>
@@ -150,10 +147,7 @@ export async function WhereItGoes({
               {resolved && (
                 <form action={setSignMapPin.bind(null, sign.id)}>
                   <input type="hidden" name="mode" value="clear" />
-                  <button
-                    type="submit"
-                    className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-red-300"
-                  >
+                  <button type="submit" className="btn hover:text-[var(--danger)]">
                     Clear pin
                   </button>
                 </form>

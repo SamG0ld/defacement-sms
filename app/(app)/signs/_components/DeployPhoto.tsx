@@ -5,6 +5,8 @@ import { createPortal } from "react-dom";
 
 import { signDeployPhotoSrc } from "@/lib/deploy/photo";
 
+import { MapPin } from "../../map/_components/MapPin";
+
 // Full-screen lightbox for a sign's deploy photo, served through the auth-gated
 // route (never the raw Blob URL). Closes on backdrop click, Esc, or the button.
 // Portaled to <body> so it escapes any transformed ancestor — the map pin lives
@@ -89,8 +91,9 @@ export function DeployPhotoThumb({ signId }: { signId: number }) {
   );
 }
 
-// Map-pin variant: the floor-map dot rendered as a button that opens the same
-// lightbox. Visual parity with the static accent dot in FloorPinView.
+// Map-pin variant: a teardrop MapPin rendered as a button that opens the same
+// lightbox. Visual parity with the other markers in FloorPinView; always rendered
+// inside ZoomCanvas, which MapPin's KeepScale requires.
 export function DeployPhotoPin({
   signId,
   active,
@@ -108,10 +111,10 @@ export function DeployPhotoPin({
         onClick={() => setOpen(true)}
         title={title}
         aria-label={title ? `${title} — view photo` : "View deploy photo"}
-        className={`block rounded-full bg-[var(--accent)] p-0 ring-2 ring-white ${
-          active ? "h-4 w-4" : "h-3 w-3"
-        }`}
-      />
+        className="block p-0"
+      >
+        <MapPin active={active} />
+      </button>
       {open && <PhotoLightbox signId={signId} onClose={() => setOpen(false)} />}
     </>
   );

@@ -23,12 +23,18 @@ be scripted.
    ```
 
 ## 2. Seed reference + admin data
-Run against the same database (direct URL is fine):
+Run against the same database (direct URL is fine). **Order matters** — the floor-map seeder looks
+up zones by code, so `reference-data.sql` must run before it:
 ```
-npx prisma db execute --file prisma/seeds/reference-data.sql      # 11 tags + venue zones
-npx prisma db execute --file prisma/seeds/equipment-types.sql     # inventory item types
-npx prisma db execute --file prisma/seeds/bootstrap-admins.sql    # admin rows (idempotent)
+npx prisma db execute --file prisma/seeds/reference-data.sql            # 11 tags + venue zones (run FIRST)
+npx prisma db execute --file prisma/seeds/equipment-types.sql          # inventory item types
+DATABASE_URL="<direct url>" node prisma/seeds/seed-floor-maps.mjs      # venue floor-map images -> floor_maps (needs zones)
+npx prisma db execute --file prisma/seeds/backfill-room-floor-maps.sql # link existing rooms to their floor map
+npx prisma db execute --file prisma/seeds/bootstrap-admins.sql         # admin rows (idempotent)
 ```
+The floor-map seeder is a Node script, not a `.sql` file — image bytes can't go through a plain SQL
+seed. It reads `DATABASE_URL` from the env (or `.env`), upserts by `key`, and is idempotent
+(re-running refreshes the image but preserves an admin's `enabled` toggle).
 Edit `bootstrap-admins.sql` to use your own admin email(s) first, or seed admins via the
 `BOOTSTRAP_ADMIN_EMAILS` env var instead (step 6). Do **not** run `sample-signs.sql` in
 production — that's local test data.
@@ -50,6 +56,7 @@ production — that's local test data.
    - `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`
    - `AUTH_RESEND_KEY`, `EMAIL_FROM` (from step 5b) — magic-link email
    - `BLOB_READ_WRITE_TOKEN` (from step 4b) — deploy-photo storage; **required in production**
+   - `CRON_SECRET` — generate: `openssl rand -base64 32`; **optional** (not required at startup) — enables the daily login-audit retention purge; the purge route 401s without it (see step 4c)
    - `BOOTSTRAP_ADMIN_EMAILS` — comma-separated admin emails
    - `CSP_MODE=report` for the first deploy (flip to `enforce` in step 7)
    - `FIGMA_API_TOKEN` — *optional*; only needed for "Pull previews from Figma" on a generation
@@ -66,6 +73,13 @@ only through the app's auth-gated route, never a public URL).
    > **Required in production** — `assertProdEnv()` (`lib/env.ts`) fails startup without it,
    > rather than letting the first floor photo-upload throw. Local dev works without it; photo
    > upload is simply disabled until the token is set.
+
+## 4c. Vercel Cron — login-audit retention **(you)**
+The app records every sign-in and denied attempt in the audit log with coarse location and device.
+A daily Vercel Cron job (`/api/cron/purge-login-audit`, defined in `vercel.json`) purges login
+records older than 90 days, keeping admin audit history intact.
+1. Ensure `CRON_SECRET` is set in the Vercel project env (step 4, list item `CRON_SECRET`).
+2. No additional setup needed — Vercel auto-detects the `crons` array in `vercel.json` on deploy.
 
 ## 5. Google OAuth **(you)**
 Google Cloud Console → APIs & Services → Credentials → your OAuth client →
@@ -98,7 +112,7 @@ Magic-link sign-in (for teammates who can't use Google OAuth) needs an email sen
 1. Click through the app with the browser console open; confirm no `Content-Security-Policy`
    violation reports.
 2. Set `CSP_MODE=enforce` in Vercel and redeploy. The header flips from report-only to enforcing
-   (`next.config.ts`).
+   (`lib/csp.ts` / `proxy.ts`).
 
 ## 8. Smoke test
 - Sign in with Google; `/signs` loads; create/advance a sign; `/inventory` loads.

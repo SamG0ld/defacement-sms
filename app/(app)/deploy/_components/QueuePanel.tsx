@@ -38,7 +38,7 @@ export function QueuePanel({ store }: { store: DeployStore }) {
   const failed = store.outbox.filter((e) => e.status === "failed");
 
   return (
-    <section className="rounded-lg border border-zinc-800 bg-zinc-950">
+    <section className="panel">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -57,7 +57,7 @@ export function QueuePanel({ store }: { store: DeployStore }) {
       </button>
 
       {open && (
-        <ul className="divide-y divide-zinc-800 border-t border-zinc-800">
+        <ul className="divide-y divide-[var(--line)] border-t border-[var(--line)]">
           {store.outbox.map((e) => (
             <li
               key={e.clientId}
@@ -73,7 +73,7 @@ export function QueuePanel({ store }: { store: DeployStore }) {
                 <button
                   type="button"
                   onClick={() => void store.discardFailed(e)}
-                  className="shrink-0 rounded border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800"
+                  className="btn btn-sm shrink-0"
                 >
                   Discard
                 </button>

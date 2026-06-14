@@ -6,7 +6,13 @@
 // /deploy shell out of CacheStorage. postMessage is fire-and-forget; the button
 // still submits the enclosing <form> normally, so sign-out is unaffected if the
 // SW is absent or the message is dropped.
-export function SignOutButton() {
+export function SignOutButton({
+  className = "rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800",
+  children = "Sign out",
+}: {
+  className?: string;
+  children?: React.ReactNode;
+}) {
   const purgeCache = () => {
     try {
       navigator.serviceWorker?.controller?.postMessage("PURGE_CACHE");
@@ -16,12 +22,8 @@ export function SignOutButton() {
   };
 
   return (
-    <button
-      type="submit"
-      onClick={purgeCache}
-      className="rounded border border-zinc-700 px-2 py-0.5 hover:bg-zinc-800"
-    >
-      Sign out
+    <button type="submit" onClick={purgeCache} className={className}>
+      {children}
     </button>
   );
 }

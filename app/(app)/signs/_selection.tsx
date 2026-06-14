@@ -17,6 +17,8 @@ import {
   useState,
 } from "react";
 
+import { usePresence } from "@/app/_components/usePresence";
+
 import { DEPLOYMENT_SLOTS, SIGN_STATUSES, statusBadgeClass } from "./_lib";
 import {
   bulkAddTag,
@@ -172,10 +174,9 @@ function SelectionInputs({
   );
 }
 
-const FIELD =
-  "rounded border border-zinc-700 bg-black px-2 py-1 text-xs text-zinc-100";
-const ACTION_BTN =
-  "rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-40";
+// Console primitives, compact for the dense bulk bar.
+const FIELD = "field text-xs";
+const ACTION_BTN = "btn btn-sm disabled:opacity-40";
 
 export function BulkBar({
   canManage,
@@ -193,17 +194,37 @@ export function BulkBar({
   const { selected, allMatching, total, pageIds, setAllMatching, clear } =
     useSelection();
   const count = allMatching ? total : selected.size;
-  if (count === 0) return null;
+
+  // Slide in/out instead of snapping: usePresence keeps the bar mounted through
+  // its exit animation (hooks must run before the early return below).
+  const present = count > 0;
+  const { rendered, exiting, onAnimationEnd } = usePresence(present);
+  // Freeze the headline count for the slide-out frames so it doesn't blink to 0
+  // (count is already 0 during the exit). Render-phase state adjustment — the
+  // same "derive state from a changing value" pattern usePresence uses; only
+  // advances while count > 0, so it holds the last real value through the exit.
+  const [shownCount, setShownCount] = useState(count);
+  const [prevCount, setPrevCount] = useState(count);
+  if (count !== prevCount) {
+    setPrevCount(count);
+    if (count > 0) setShownCount(count);
+  }
+
+  if (!rendered) return null;
 
   const pageFull = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
   const canOfferAll = !allMatching && pageFull && total > pageIds.length;
   const inputs = <SelectionInputs filters={filters} returnTo={returnTo} />;
 
   return (
-    <div className="sticky bottom-0 z-10 -mx-4 border-t border-zinc-800 bg-zinc-950/95 px-4 py-3 backdrop-blur">
+    <div
+      className="bulkbar sticky bottom-0 z-10 -mx-4 border-t border-[var(--line-strong)] bg-[var(--surface)] px-4 py-3"
+      data-exiting={exiting ? "" : undefined}
+      onAnimationEnd={onAnimationEnd}
+    >
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="flex items-center gap-2 text-sm text-zinc-300">
-          <span className="font-medium text-accent">{count}</span>
+          <span className="font-medium text-accent">{shownCount}</span>
           <span>selected</span>
           <button
             type="button"
@@ -234,7 +255,7 @@ export function BulkBar({
               type="submit"
               name="setStatus"
               value={s}
-              className={`rounded border px-2 py-0.5 text-[10px] uppercase ${statusBadgeClass(s)} hover:opacity-80`}
+              className={`badge ${statusBadgeClass(s)} cursor-pointer hover:opacity-80`}
             >
               {s}
             </button>
@@ -328,16 +349,15 @@ export function BulkBar({
             <form
               action={bulkDelete}
               onSubmit={(e) => {
-                if (!confirm(`Delete ${count} sign(s)? This cannot be undone.`)) {
+                if (
+                  !confirm(`Delete ${shownCount} sign(s)? This cannot be undone.`)
+                ) {
                   e.preventDefault();
                 }
               }}
             >
               {inputs}
-              <button
-                type="submit"
-                className="rounded border border-red-900 px-2 py-1 text-xs text-red-300 hover:bg-red-950"
-              >
+              <button type="submit" className="btn btn-sm btn-danger">
                 Delete
               </button>
             </form>

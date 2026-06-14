@@ -43,9 +43,11 @@ workflow with a database-backed web app.
   content type (PNG/JPEG/WebP only — an SVG, HTML, or renamed binary is rejected), with a size cap
   and a decompression-bomb guard (`lib/image-upload.ts`); stored blob IDs are sanitized so a crafted
   name can't escape its path (`lib/blob-image.ts`).
-- **Security headers** — HSTS, a report-only CSP (violations POST to `/api/csp-report` for a
-  data-driven report→enforce flip), `X-Frame-Options`, `Referrer-Policy`, a locked-down
-  `Permissions-Policy`, and more in `next.config.ts`.
+- **Security headers** — HSTS, `X-Frame-Options`, `Referrer-Policy`, a locked-down
+  `Permissions-Policy`, and more (`next.config.ts`), plus a **per-request, nonce-based CSP**
+  (`lib/csp.ts` + `proxy.ts`): `script-src` uses a fresh per-response nonce with `strict-dynamic`
+  instead of `unsafe-inline`. It runs report-only or enforcing via `CSP_MODE`, with violations
+  POSTing to `/api/csp-report` for a data-driven report→enforce flip.
 - **Production env preflight** — a boot-time check refuses to start in production with missing
   config or a weak/placeholder `AUTH_SECRET`, so a misconfigured deploy fails fast instead of
   running insecure (`lib/env.ts`).
@@ -81,12 +83,18 @@ workflow with a database-backed web app.
 - **Field-deployment PWA** (`/deploy`) — an offline-first, installable web app where crews claim
   batches of `sorted` signs (exclusive lock) and mark them deployed with an optional photo, working
   with no network on a hostile-RF floor and syncing on reconnect (durable IndexedDB outbox over the
-  `/api/native/*` JSON API; private photo storage).
+  `/api/native/*` JSON API; private photo storage). The layout is **device-adaptive** — a
+  full-screen field flow on phones (bottom-sheet deploy confirm, claim bar docked above the tab bar)
+  that widens on desktop into a multi-column console: the sign lists beside a live sync queue and a
+  click-to-preview pane.
 - **Zones** — configurable venue zones (the reference-data seed ships example convention-center
   zones — multiple levels plus exhibit halls); the importer maps location text to the right zone.
 - **Admin & user management** — `/users` (add by email + role, change role, deactivate), and an
   admin `/signs/manage` to clear test data or all signs (typed confirmation), with every
   destructive action written to an audit log.
+- **Login audit history** — `/activity` → **Logins** tab (admin-only) records successful and denied
+  sign-in attempts with coarse location (Vercel edge geo headers, no raw IP), device type, and
+  sign-in method. Login records older than 90 days are auto-purged daily by a scheduled Vercel Cron job.
 
 ## Getting started
 
@@ -201,14 +209,14 @@ lib/
   db.ts          Prisma client singleton (pg driver adapter)
   rbac.ts        Role helpers — requireSession / requireRole
   ratelimit.ts   Upstash limiter (no-ops when unconfigured)
-  invitations.ts SHA-256 hashed, constant-time invitation tokens
+  csp.ts         Per-request, nonce-based Content-Security-Policy builder
 prisma/
   schema.prisma  19 models (auth + domain)
   migrations/
   seeds/         Reference data, equipment types, floor maps, sample signs
 fixtures/        Importable sample CSVs
-proxy.ts         Edge middleware — auth gate + auth-endpoint rate limiting
-next.config.ts   Security headers + CSP
+proxy.ts         Edge middleware — auth gate, rate limiting, per-request nonce CSP
+next.config.ts   Static security headers (CSP is set per-request in proxy.ts)
 tests/           unit (Vitest) + integration (Prisma) + e2e (Playwright)
 .github/         CI workflow
 ```
@@ -223,9 +231,9 @@ tests/           unit (Vitest) + integration (Prisma) + e2e (Playwright)
 
 ## Security
 
-Security headers, a report-only CSP with violation reporting (`/api/csp-report`, promotable to
-enforcing), an edge auth gate, same-origin CSRF defense on the `/api/native/*` API, per-actor
-rate limiters that fail open, hashed single-use invitation tokens, formula-injection-safe CSV
+Security headers, a per-request nonce-based CSP with violation reporting (`/api/csp-report`,
+report-only or enforcing via `CSP_MODE`), an edge auth gate, same-origin CSRF defense on the
+`/api/native/*` API, per-actor rate limiters that fail open, formula-injection-safe CSV
 export, and a per-user session kill-switch are in place. Server-side authorization is centralized
 in `lib/rbac.ts` (`requireSession` / `requireRole`). Secrets live only in `.env` (gitignored);
 `.env.example` is the documented source of truth for variable names.

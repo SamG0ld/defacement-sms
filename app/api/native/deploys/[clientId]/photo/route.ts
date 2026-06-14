@@ -8,6 +8,7 @@ import { validateImageUpload, MAX_IMAGE_BYTES } from "@/lib/image-upload";
 import { uploadDeployPhoto, streamDeployPhoto } from "@/lib/deploy/blob";
 import { attachDeployPhoto } from "@/lib/deploy/service";
 import { prisma } from "@/lib/db";
+import { hasRole } from "@/lib/rbac";
 
 // Blob upload + DB writes — bound the worst case.
 export const maxDuration = 30;
@@ -31,7 +32,7 @@ export async function POST(
 ): Promise<Response> {
   const { clientId } = await params;
   return runApi(req, async () => {
-    await requireApiSession();
+    const actor = await requireApiSession();
 
     // Cheap reject before allocating the body: a hostile multi-GB upload must not
     // be buffered into memory just to fail the cap afterwards. Content-Length is
@@ -45,9 +46,20 @@ export async function POST(
     // clientId can't orphan bytes in the store.
     const event = await prisma.deployEvent.findUnique({
       where: { clientId },
-      select: { id: true },
+      select: { deployedByUserId: true },
     });
     if (!event) throw new ApiError(404, "unknown deploy event");
+
+    // Ownership gate, placed before the body is read so a denied caller never
+    // makes us buffer image bytes. Only the user who logged this deploy can
+    // attach/overwrite its photo; leads/admins may override (coordinating or
+    // correcting field evidence). A null owner (legacy/imported events) is
+    // treated as lead-only — it fails the `!==` for any actor, so non-leads are
+    // denied. Without this gate, any active user who learns a clientId could
+    // silently replace another user's deploy photo.
+    if (event.deployedByUserId !== actor.userId && !hasRole(actor.role, "lead")) {
+      throw new ApiError(403, "not your deploy event");
+    }
 
     const bytes = new Uint8Array(await req.arrayBuffer());
     if (bytes.byteLength > MAX_IMAGE_BYTES) {

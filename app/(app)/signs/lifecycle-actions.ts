@@ -162,8 +162,26 @@ export async function recordDelivery(
   if (parsed.data.condition) parts.push(`condition: ${parsed.data.condition}`);
   const notes = parts.length ? `Delivery — ${parts.join("; ")}` : "Delivery recorded";
 
-  await prisma.$transaction([
-    prisma.sign.update({
+  // Lock the row and re-check status INSIDE the tx so two concurrent submits
+  // (double-tap / retried POST) can't both pass the guard and each write a
+  // "delivered" history row (H3). loadExternalSign above is a cheap early-exit;
+  // this is the authoritative, race-safe guard — and oldStatus is the locked
+  // (committed) value rather than the possibly-stale pre-tx read.
+  await prisma.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ status: string }[]>`
+      SELECT status FROM signs WHERE id = ${signId} FOR UPDATE`;
+    const current = locked[0]?.status;
+    if (current === undefined) failList("Sign not found.");
+    if (current === "delivered") {
+      failDetail(signId, "Delivery has already been recorded for this item.");
+    }
+    if (current === "handed_off" || current === "installed") {
+      failDetail(
+        signId,
+        "Delivery can't be re-recorded after the item has been handed off or installed.",
+      );
+    }
+    await tx.sign.update({
       where: { id: signId },
       data: {
         status: "delivered",
@@ -172,11 +190,11 @@ export async function recordDelivery(
         deliveryCondition: parsed.data.condition,
         ...(photoPath ? { deliveryPhotoUrl: photoPath } : {}),
       },
-    }),
-    prisma.statusHistory.create({
-      data: { signId, oldStatus: sign.status, newStatus: "delivered", changedBy, notes },
-    }),
-  ]);
+    });
+    await tx.statusHistory.create({
+      data: { signId, oldStatus: current, newStatus: "delivered", changedBy, notes },
+    });
+  });
 
   revalidatePath("/signs");
   revalidatePath(`/signs/${signId}`);
@@ -228,8 +246,21 @@ export async function recordHandoff(
     ? `Handed off to ${parsed.data.recipient} — ${parsed.data.notes}`
     : `Handed off to ${parsed.data.recipient}`;
 
-  await prisma.$transaction([
-    prisma.sign.update({
+  // Lock + re-check inside the tx (H3): serialize concurrent submits so a
+  // double-tap can't write two "handed_off" history rows. Authoritative guard;
+  // the pre-tx check is an early-exit.
+  await prisma.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ status: string }[]>`
+      SELECT status FROM signs WHERE id = ${signId} FOR UPDATE`;
+    const current = locked[0]?.status;
+    if (current === undefined) failList("Sign not found.");
+    if (current === "handed_off") {
+      failDetail(signId, "Handoff has already been recorded for this item.");
+    }
+    if (current === "installed") {
+      failDetail(signId, "Handoff can't be re-recorded after the item is installed.");
+    }
+    await tx.sign.update({
       where: { id: signId },
       data: {
         status: "handed_off",
@@ -238,11 +269,11 @@ export async function recordHandoff(
         handoffNotes: parsed.data.notes,
         ...(photoPath ? { handoffPhotoUrl: photoPath } : {}),
       },
-    }),
-    prisma.statusHistory.create({
-      data: { signId, oldStatus: sign.status, newStatus: "handed_off", changedBy, notes },
-    }),
-  ]);
+    });
+    await tx.statusHistory.create({
+      data: { signId, oldStatus: current, newStatus: "handed_off", changedBy, notes },
+    });
+  });
 
   revalidatePath("/signs");
   revalidatePath(`/signs/${signId}`);
@@ -272,8 +303,18 @@ export async function confirmInstalled(
   const stamps = stampsForStatus("installed", changedBy, new Date());
   const notes = extra ? `Installed — ${extra}` : "Installation confirmed";
 
-  await prisma.$transaction([
-    prisma.sign.update({
+  // Lock + re-check inside the tx (H3): serialize concurrent submits so a
+  // double-tap can't write two "installed" history rows. Authoritative guard;
+  // the pre-tx check is an early-exit.
+  await prisma.$transaction(async (tx) => {
+    const locked = await tx.$queryRaw<{ status: string }[]>`
+      SELECT status FROM signs WHERE id = ${signId} FOR UPDATE`;
+    const current = locked[0]?.status;
+    if (current === undefined) failList("Sign not found.");
+    if (current === "installed") {
+      failDetail(signId, "This item is already confirmed installed.");
+    }
+    await tx.sign.update({
       where: { id: signId },
       data: {
         status: "installed",
@@ -281,11 +322,11 @@ export async function confirmInstalled(
         installNotes: extra,
         ...(photoPath ? { installPhotoUrl: photoPath } : {}),
       },
-    }),
-    prisma.statusHistory.create({
-      data: { signId, oldStatus: sign.status, newStatus: "installed", changedBy, notes },
-    }),
-  ]);
+    });
+    await tx.statusHistory.create({
+      data: { signId, oldStatus: current, newStatus: "installed", changedBy, notes },
+    });
+  });
 
   revalidatePath("/signs");
   revalidatePath(`/signs/${signId}`);

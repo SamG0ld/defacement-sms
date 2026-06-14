@@ -6,48 +6,60 @@ import { RowStatusControl } from "../_status-control";
 import { HardwareToggle } from "./HardwareToggle";
 import type { SignRow } from "./types";
 
-// Mobile card view of the signs list (md:hidden — SignsTable takes over above md).
+// Mobile card view of the signs list (SignsView mounts it on mobile; SignsTable
+// on desktop). Console treatment (.signcard): bold sign text, mono id/type line,
+// dim meta row. Keeps the real selection / status / hardware islands.
 export function SignCards({ signs }: { signs: SignRow[] }) {
   return (
-    <div className="space-y-3 md:hidden">
+    <div className="flex flex-col gap-[9px]">
       {signs.map((sign) => (
-        <div
-          key={sign.id}
-          className="space-y-2 rounded-lg border border-zinc-800 bg-zinc-950 p-3"
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex min-w-0 items-start gap-2">
-              <span className="pt-0.5">
-                <RowCheckbox signId={sign.id} />
-              </span>
-              <Link href={`/signs/${sign.id}`} className="min-w-0">
-                <div className="truncate font-medium text-zinc-100">
-                  {sign.signText}
-                </div>
-                <div className="font-mono text-xs text-zinc-500">
-                  {sign.itemId} · {sign.signType}
-                </div>
-              </Link>
-            </div>
+        <div key={sign.id} className="signcard">
+          <div className="flex items-start gap-2">
+            <span className="pt-0.5">
+              <RowCheckbox signId={sign.id} />
+            </span>
+            <Link href={`/signs/${sign.id}`} className="min-w-0 flex-1">
+              <div className="sc-text">
+                {sign.signText}
+                {sign.quantity > 1 && (
+                  <span
+                    className="ml-1.5 font-mono text-[12px] font-normal"
+                    style={{ color: "var(--zinc-500)" }}
+                  >
+                    ×{sign.quantity}
+                  </span>
+                )}
+              </div>
+              <div className="sc-id mt-[3px]">
+                {sign.itemId} · {sign.signType}
+              </div>
+            </Link>
           </div>
-          <div className="flex flex-wrap gap-2 text-xs text-zinc-400">
+
+          <div className="sc-meta">
             <span>{sign.zone ? shortZoneLabel(sign.zone) : "no zone"}</span>
-            <span>·</span>
-            <span>{deploymentSlotLabel(sign.deploymentSlot)}</span>
+            <span style={{ color: "var(--zinc-700)" }}>·</span>
+            <span className="mono">
+              {deploymentSlotLabel(sign.deploymentSlot)}
+            </span>
           </div>
+
           {sign.tagAssignments.length > 0 && (
-            <div className="flex flex-wrap gap-1">
+            <div className="flex flex-wrap gap-[5px]">
               {sign.tagAssignments.map((a) => (
+                // safeColor() strictly allowlists #RRGGBB — load-bearing, it's what
+                // keeps the tag color out of a CSS-injection sink.
                 <span
                   key={a.tagId}
-                  className="rounded border px-1.5 py-0.5 text-[10px] text-zinc-300"
-                  style={{ borderColor: safeColor(a.tag.color) }}
+                  className="tag"
+                  style={{ "--tc": safeColor(a.tag.color) } as React.CSSProperties}
                 >
                   {a.tag.name}
                 </span>
               ))}
             </div>
           )}
+
           <div className="flex flex-wrap items-center gap-2">
             <RowStatusControl signId={sign.id} status={sign.status} />
             <HardwareToggle sign={sign} />

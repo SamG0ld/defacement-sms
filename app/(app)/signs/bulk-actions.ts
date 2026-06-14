@@ -1,7 +1,12 @@
 "use server";
 
 import { prisma } from "@/lib/db";
-import { requireRole, requireSession } from "@/lib/rbac";
+import { hasRole, requireRole, requireSession } from "@/lib/rbac";
+import {
+  forwardSourceStatuses,
+  isLeadOnlyStatusTarget,
+} from "@/lib/sign-status-authz";
+import { actorCrewIds } from "@/lib/sign-claims";
 import type { Prisma, SignStatus } from "@/app/generated/prisma/client";
 
 import {
@@ -52,8 +57,27 @@ export async function bulkSetStatus(formData: FormData): Promise<void> {
   const newStatus = next as SignStatus;
   const target = readTarget(formData, returnTo);
 
-  // Skip rows already at the target so history doesn't record no-ops.
-  const rows = await resolveRows(target, { status: { not: newStatus } });
+  // H2/#20: leads/admins set status freely (skip only no-ops). Volunteers are
+  // restricted to FORWARD moves on signs THEIR crew has claimed — so an
+  // allMatching selection is intersected down to their claimed, eligible signs:
+  // no mass-corruption of the whole inventory, no backward moves, and `deployed`
+  // is reachable only for signs they hold (every eligible row is crew-claimed).
+  let rows: { id: number; status: SignStatus }[];
+  if (hasRole(session.user.role, "lead")) {
+    rows = await resolveRows(target, { status: { not: newStatus } });
+  } else {
+    if (isLeadOnlyStatusTarget(newStatus)) {
+      fail(returnTo, "Only a lead or admin can set this status.");
+    }
+    const crewIds = await actorCrewIds(session.user.id);
+    if (crewIds.length === 0) {
+      fail(returnTo, "You can only change the status of signs your crew has claimed.");
+    }
+    rows = await resolveRows(target, {
+      status: { in: forwardSourceStatuses(newStatus) },
+      claimedByCrewId: { in: crewIds },
+    });
+  }
   if (rows.length === 0) done(returnTo);
 
   const changedBy = session.user.email ?? session.user.id;
@@ -212,9 +236,17 @@ export async function bulkDelete(formData: FormData): Promise<void> {
   await assertMutateBudget(session, returnTo);
   const target = readTarget(formData, returnTo);
 
+  // Server-side count before the delete: the client-side confirm phrase is
+  // UI-only and bypassable via a direct POST.  Echo the real count into the
+  // audit trail so forensics have an exact record of what was wiped.
+  const preCount =
+    target.kind === "filter"
+      ? await prisma.sign.count({ where: buildSignWhere(target.filters) })
+      : target.ids.length;
+
+  if (preCount === 0) done(returnTo);
+
   // Cascade (schema onDelete) clears status_history + tag assignments.
-  // Note: an all-matching delete with empty filters intentionally removes every
-  // sign — a lead-only action guarded by a client-side confirm in the BulkBar.
   await runWrite(returnTo, "bulkDelete", async () => {
     if (target.kind === "filter") {
       await prisma.sign.deleteMany({ where: buildSignWhere(target.filters) });
@@ -224,7 +256,7 @@ export async function bulkDelete(formData: FormData): Promise<void> {
       }
     }
   });
-  await auditBulk(session, "bulk.delete", `Deleted ${targetDesc(target)}`);
+  await auditBulk(session, "bulk.delete", `Deleted ${preCount} sign${preCount === 1 ? "" : "s"} (${targetDesc(target)})`);
   done(returnTo);
 }
 

@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 
 import { clampPct, isTap } from "@/lib/map-gesture";
 
+import { MapPin } from "./MapPin";
 import { ZoomCanvas } from "./ZoomCanvas";
 
 // Click-to-place primitive over a zoomable floor map. Zoom in (wheel / pinch /
@@ -77,17 +78,21 @@ export function MapPinPicker({
           {/* Current location (read-only) — shown when no editable pin is set yet
               so the existing placement stays visible while you decide to move it. */}
           {currentMarker && !pos && (
-            <span
-              className="pointer-events-none absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-zinc-400/70 ring-2 ring-white"
+            <div
+              className="pointer-events-none absolute -translate-x-1/2 -translate-y-full"
               style={{ left: `${currentMarker.x}%`, top: `${currentMarker.y}%` }}
               title="Current location"
-            />
+            >
+              <MapPin active toneClass="text-zinc-400" />
+            </div>
           )}
           {pos && (
-            <span
-              className="pointer-events-none absolute h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--accent)] ring-2 ring-white"
+            <div
+              className="pointer-events-none absolute -translate-x-1/2 -translate-y-full"
               style={{ left: `${pos.x}%`, top: `${pos.y}%` }}
-            />
+            >
+              <MapPin active toneClass="text-[var(--accent)]" />
+            </div>
           )}
         </div>
       </ZoomCanvas>

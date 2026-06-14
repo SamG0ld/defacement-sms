@@ -42,12 +42,12 @@ export function EquipmentManageRow({
           name="name"
           defaultValue={name}
           required
-          className="w-44 rounded border border-zinc-700 bg-black px-2 py-1 text-sm text-zinc-100"
+          className="field w-44"
         />
         <select
           name="category"
           defaultValue={category ?? "Consumable"}
-          className="rounded border border-zinc-700 bg-black px-2 py-1 text-sm text-zinc-100"
+          className="field"
         >
           {options.map((c) => (
             <option key={c} value={c}>
@@ -55,10 +55,7 @@ export function EquipmentManageRow({
             </option>
           ))}
         </select>
-        <button
-          type="submit"
-          className="rounded border border-[var(--accent)] px-2 py-1 text-xs text-accent hover:opacity-80"
-        >
+        <button type="submit" className="btn btn-sm">
           Save
         </button>
         <button
@@ -99,10 +96,7 @@ export function EquipmentManageRow({
           className="flex items-center gap-2"
         >
           <span className="text-xs text-[var(--danger)]">Delete?</span>
-          <button
-            type="submit"
-            className="rounded border border-[var(--danger)] px-2 py-0.5 text-[10px] uppercase text-[var(--danger)] hover:opacity-80"
-          >
+          <button type="submit" className="btn btn-danger btn-sm">
             ✓ confirm
           </button>
           <button

@@ -20,7 +20,12 @@ function createPrismaClient(): PrismaClient {
     connectionString,
     max: 3,
     idleTimeoutMillis: 10_000,
-    connectionTimeoutMillis: 5_000,
+    // Neon scale-to-zero parks the compute when idle; the first connection after
+    // a cold period has to wait for it to wake. 6s gives that wake room on the
+    // first attempt, and lib/db-retry.ts (`withDbRetry`) retries a still-transient
+    // blip once more — together they keep a cold start from 500ing auth while
+    // staying well under the serverless function budget even with the retry.
+    connectionTimeoutMillis: 6_000,
   });
 
   return new PrismaClient({

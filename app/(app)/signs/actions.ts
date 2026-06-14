@@ -5,8 +5,11 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 
 import { prisma } from "@/lib/db";
+import { recordAudit } from "@/lib/audit";
 import { checkMutationRateLimit } from "@/lib/ratelimit";
 import { requireRole, requireSession } from "@/lib/rbac";
+import { decideStatusChange } from "@/lib/sign-status-authz";
+import { actorHoldsClaim } from "@/lib/sign-claims";
 import { Prisma } from "@/app/generated/prisma/client";
 import type { SignStatus } from "@/app/generated/prisma/client";
 
@@ -63,13 +66,27 @@ export async function updateSignStatus(
 
   const sign = await prisma.sign.findUnique({
     where: { id: signId },
-    select: { id: true, status: true },
+    select: { id: true, status: true, claimedByCrewId: true },
   });
   if (!sign) failList("Sign not found.");
 
   if (sign.status === newStatus) {
     failDetail(signId, "Sign is already in that status.");
   }
+
+  // H2: volunteers are forward-only and need their crew's claim to mark a sign
+  // deployed; backward moves are lead/admin only. Leads/admins are unrestricted.
+  const holdsClaim =
+    newStatus === "deployed"
+      ? await actorHoldsClaim(session.user.id, sign.claimedByCrewId)
+      : false;
+  const decision = decideStatusChange({
+    role: session.user.role,
+    currentStatus: sign.status,
+    targetStatus: newStatus,
+    actorHoldsClaim: holdsClaim,
+  });
+  if (!decision.ok) failDetail(signId, decision.reason);
 
   const changedBy = session.user.email ?? session.user.id;
   const now = new Date();
@@ -108,7 +125,14 @@ export async function setHardwareCollected(
   signId: number,
   formData: FormData,
 ): Promise<void> {
-  await requireSession();
+  const session = await requireSession();
+
+  // Same generous backstop as updateSignStatus — open to every active user,
+  // so a role gate alone is not a throttle.
+  const budget = await checkMutationRateLimit(session.user.id);
+  if (!budget.success) {
+    failDetail(signId, "Too many changes at once — wait a minute and try again.");
+  }
 
   const collected = formData.get("collected") === "1";
   const exists = await prisma.sign.findUnique({
@@ -263,7 +287,7 @@ async function checkRefs(
 }
 
 export async function createSign(formData: FormData): Promise<void> {
-  await requireRole("lead");
+  const session = await requireRole("lead");
 
   const raw = readSignForm(formData);
   const parsed = signSchema.safeParse(raw);
@@ -292,6 +316,13 @@ export async function createSign(formData: FormData): Promise<void> {
     failList("Could not create the sign. Check the details and try again.");
   }
 
+  await recordAudit({
+    action: "sign.create",
+    actorId: session.user.id,
+    actorEmail: session.user.email,
+    detail: `Created sign #${newId} "${parsed.data.itemId}"`,
+  });
+
   revalidatePath("/signs");
   redirect(`/signs/${newId}`);
 }
@@ -300,7 +331,7 @@ export async function updateSign(
   signId: number,
   formData: FormData,
 ): Promise<void> {
-  await requireRole("lead");
+  const session = await requireRole("lead");
 
   const raw = readSignForm(formData);
   const parsed = signSchema.safeParse(raw);
@@ -343,17 +374,31 @@ export async function updateSign(
     failDetail(signId, "Could not save changes. Check the details and try again.");
   }
 
+  await recordAudit({
+    action: "sign.update",
+    actorId: session.user.id,
+    actorEmail: session.user.email,
+    detail: `Updated sign #${signId} "${parsed.data.itemId}"`,
+  });
+
   revalidatePath("/signs");
   revalidatePath(`/signs/${signId}`);
   redirect(`/signs/${signId}`);
 }
 
 export async function deleteSign(signId: number): Promise<void> {
-  await requireRole("lead");
+  const session = await requireRole("lead");
 
   // Cascade (schema onDelete) clears status_history + tag assignments.
   await prisma.sign.delete({ where: { id: signId } }).catch(() => {
     failList("Could not delete the sign.");
+  });
+
+  await recordAudit({
+    action: "sign.delete",
+    actorId: session.user.id,
+    actorEmail: session.user.email,
+    detail: `Deleted sign #${signId}`,
   });
 
   revalidatePath("/signs");

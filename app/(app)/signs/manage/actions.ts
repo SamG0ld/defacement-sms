@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { requireRole } from "@/lib/rbac";
 import { recordAudit } from "@/lib/audit";
+import { checkMutationRateLimit } from "@/lib/ratelimit";
 
 const CONFIRM_PHRASE = "DELETE ALL SIGNS";
 
@@ -21,6 +22,8 @@ function done(message: string): never {
 // status history + tag assignments. The final list (isTestData=false) is safe.
 export async function clearTestSigns(): Promise<void> {
   const session = await requireRole("admin");
+  const budget = await checkMutationRateLimit(session.user.id);
+  if (!budget.success) fail("Too many changes at once. Please wait a moment.");
 
   const { count } = await prisma.sign.deleteMany({
     where: { isTestData: true },
@@ -42,6 +45,8 @@ export async function clearTestSigns(): Promise<void> {
 // typed phrase so it can't be a misclick.
 export async function clearAllSigns(formData: FormData): Promise<void> {
   const session = await requireRole("admin");
+  const budget = await checkMutationRateLimit(session.user.id);
+  if (!budget.success) fail("Too many changes at once. Please wait a moment.");
 
   const confirm = String(formData.get("confirm") ?? "").trim();
   if (confirm !== CONFIRM_PHRASE) {

@@ -33,6 +33,15 @@ export async function GET(
   });
   if (!meta) return new Response("Not found", { status: 404 });
 
+  // Allowlist check: contentType is written by validateImageUpload (which only
+  // emits these three values), but we guard at serve-time too so a future direct
+  // DB write or migration can't cause us to serve an arbitrary Content-Type
+  // (e.g. text/html → stored XSS via a compromised admin row).
+  const ALLOWED_CONTENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+  if (!ALLOWED_CONTENT_TYPES.has(meta.contentType)) {
+    return new Response("Not found", { status: 404 });
+  }
+
   const etag = `"${meta.updatedAt.getTime()}"`;
   if (_req.headers.get("if-none-match") === etag) {
     return new Response(null, { status: 304, headers: { ETag: etag } });

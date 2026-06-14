@@ -36,8 +36,7 @@ export type InvCounts = {
   notes: string | null;
 };
 
-const inputClass =
-  "w-20 rounded border border-zinc-700 bg-black px-2 py-1 text-sm text-zinc-100";
+const inputClass = "field w-20";
 
 export function CountCells({
   typeId,
@@ -56,11 +55,11 @@ export function CountCells({
     return (
       <>
         {fields.map((f) => (
-          <td key={f.key} className="px-3 py-2 tabular-nums">
+          <td key={f.key} className="t-mono tabular-nums">
             {inv ? inv[f.key] : 0}
           </td>
         ))}
-        <td className="px-3 py-2 text-xs text-zinc-400">{inv?.notes ?? "—"}</td>
+        <td className="t-dim">{inv?.notes ?? "—"}</td>
       </>
     );
   }
@@ -69,7 +68,7 @@ export function CountCells({
   return (
     <>
       {fields.map((f) => (
-        <td key={f.key} className="px-3 py-2">
+        <td key={f.key}>
           <input
             form={formId}
             type="number"
@@ -80,21 +79,18 @@ export function CountCells({
           />
         </td>
       ))}
-      <td className="px-3 py-2">
+      <td>
         <input
           form={formId}
           type="text"
           name="notes"
           defaultValue={inv?.notes ?? ""}
-          className="w-48 rounded border border-zinc-700 bg-black px-2 py-1 text-sm text-zinc-100"
+          className="field w-48"
         />
       </td>
-      <td className="px-3 py-2">
+      <td>
         <form id={formId} action={upsertInventory.bind(null, typeId, year)}>
-          <button
-            type="submit"
-            className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-          >
+          <button type="submit" className="btn btn-sm">
             Save
           </button>
         </form>

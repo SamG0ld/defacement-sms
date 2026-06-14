@@ -21,28 +21,22 @@ export function UserRowActions({
   return (
     <div className="flex items-center justify-end gap-2">
       <form action={setUserActive.bind(null, userId, !isActive)}>
-        <button
-          type="submit"
-          className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-        >
+        <button type="submit" className="btn btn-sm">
           {isActive ? "Deactivate" : "Reactivate"}
         </button>
       </form>
 
       {confirming ? (
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
           <form action={removeUser.bind(null, userId)}>
-            <button
-              type="submit"
-              className="rounded border border-red-800 bg-red-950 px-2 py-1 text-xs text-red-200 hover:bg-red-900"
-            >
+            <button type="submit" className="btn btn-danger btn-sm">
               Confirm remove
             </button>
           </form>
           <button
             type="button"
             onClick={() => setConfirming(false)}
-            className="rounded px-2 py-1 text-xs text-zinc-500 hover:text-zinc-300"
+            className="px-2 py-1 text-xs text-zinc-500 hover:text-zinc-300"
           >
             Cancel
           </button>
@@ -51,7 +45,7 @@ export function UserRowActions({
         <button
           type="button"
           onClick={() => setConfirming(true)}
-          className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-red-300"
+          className="btn btn-sm"
         >
           Remove
         </button>
