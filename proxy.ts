@@ -73,6 +73,47 @@ const CSP_MODE = resolveCspMode();
 export async function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
 
+  // Apex landing: on the bare public domain (LANDING_APEX_HOST), the root path
+  // serves the /login "door" so visitors land on the placard. Env-gated — unset
+  // in dev/staging → no behavior change, and the app subdomain is never matched.
+  // Only UNauthenticated visitors are rewritten; an authenticated apex visitor
+  // falls through to the normal flow and gets the app at "/" (the same app is
+  // served on both domains). That fall-through is also what avoids a
+  // rewrite⇄redirect loop — the rewritten /login would otherwise redirect an
+  // authed user back to "/". Rewrite (not redirect) keeps the URL on the apex so
+  // the landing→boot→sign-in flow stays same-origin. The rewritten /login is
+  // public, so it carries the same nonce-bearing CSP as every other response.
+  // Normalize the configured apex host so a copy-paste slip in the env var
+  // (scheme prefix, trailing path/slash, port, or stray whitespace) still
+  // matches the request host — any of those silently breaks the landing rewrite.
+  const apexHost = process.env.LANDING_APEX_HOST?.trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "")
+    .split(":")[0]
+    .toLowerCase();
+  const reqHost = req.headers.get("host")?.trim().split(":")[0].toLowerCase();
+  if (apexHost && pathname === "/" && reqHost === apexHost) {
+    const token = await getToken({
+      req,
+      secret: process.env.AUTH_SECRET,
+      secureCookie: process.env.NODE_ENV === "production",
+    });
+    if (!token || token.isActive === false) {
+      const nonce = generateNonce();
+      const csp = buildCsp(nonce);
+      const requestHeaders = new Headers(req.headers);
+      requestHeaders.set("Content-Security-Policy", csp);
+      const url = req.nextUrl.clone();
+      url.pathname = "/login";
+      return withCsp(
+        NextResponse.rewrite(url, { request: { headers: requestHeaders } }),
+        csp,
+        CSP_MODE,
+      );
+    }
+    // Authenticated → fall through; "/" serves the app on the apex too.
+  }
+
   if (isRateLimitedAuthPath(pathname)) {
     const ip = getClientIp(req);
     const { success, remaining, reset } = await checkAuthRateLimit(ip);

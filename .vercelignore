@@ -1,0 +1,8 @@
+node_modules
+.next
+.git
+app/generated
+backups
+test-results
+playwright-report
+coverage

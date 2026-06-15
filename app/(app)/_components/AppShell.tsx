@@ -43,24 +43,32 @@ function initials(email: string): string {
 // "show floor runs on Vegas time" convention.
 function VegasClock() {
   const [now, setNow] = useState("");
+  // Resolves to the live Pacific abbreviation (PDT in summer / PST in winter)
+  // off the same en-US / America/Los_Angeles formatter that sets the time.
+  const [zone, setZone] = useState("PT");
   useEffect(() => {
-    const tick = () =>
-      setNow(
-        new Intl.DateTimeFormat("en-US", {
-          timeZone: "America/Los_Angeles",
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-          hour12: false,
-        }).format(new Date()),
-      );
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+      timeZoneName: "short",
+    });
+    const tick = () => {
+      const parts = fmt.formatToParts(new Date());
+      const get = (type: Intl.DateTimeFormatPartTypes) =>
+        parts.find((p) => p.type === type)?.value ?? "";
+      setNow(`${get("hour")}:${get("minute")}:${get("second")}`);
+      setZone(get("timeZoneName") || "PT");
+    };
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, []);
   return (
     <span className="font-mono">
-      {now} <span style={{ color: "var(--zinc-600)" }}>PT</span>
+      {now} <span style={{ color: "var(--zinc-600)" }}>{zone}</span>
     </span>
   );
 }
@@ -142,7 +150,7 @@ function MobileShell({
 
   return (
     <div
-      data-chrome="scanlines"
+      data-chrome="dotgrid"
       className="relative flex h-dvh flex-col overflow-hidden bg-base"
     >
       {/* top safe-area clearance — no header by design (installed-app feel) */}
@@ -264,7 +272,7 @@ function DesktopShell({
   const screenLabel = activeId ? SCREEN_LABEL[activeId] : "DASHBOARD";
 
   return (
-    <div data-chrome="scanlines" className="flex h-dvh overflow-hidden bg-base">
+    <div data-chrome="dotgrid" className="flex h-dvh overflow-hidden bg-base">
       {/* sidebar (chrome) */}
       <aside className="sidebar chrome">
         <Link href="/" className="block px-2 pb-2 pt-1">

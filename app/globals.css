@@ -1128,6 +1128,221 @@ body {
   }
 }
 
+/* ============================================================================
+   Public login "door" (M13). The landing placard → terminal boot → sign-in run
+   as one client state machine (LoginDoor) at /login. The controls reuse the
+   console primitives above (.prompt / .btn / .field / .badge / .dot-grid); only
+   the bespoke door chrome lives here. Everything is transform/opacity-only, so
+   the reduced-motion guard at the very end of this file freezes it (the boot's
+   skip-to-sign-in is explicit JS in LoginDoor, not CSS). */
+@layer components {
+  /* Larger button size for the sign-in screen (bigger tap target than the dense
+     in-app .btn). Overrides .btn's padding/size; pairs with .btn / .btn-primary. */
+  .btn-lg {
+    padding: 11px 14px;
+    font-size: 14px;
+    gap: 10px;
+  }
+
+  /* Entrance rise — translateY ONLY (never opacity), so content stays visible
+     even if a frame is dropped. Staggered via inline animation-delay at the call
+     site (the door stack: kicker 0 / wordmark 60 / emblem 110 / threshold 160 /
+     CTA 200 / footer 240ms). Also used for the in-app section entrance (the M12
+     "rise" finishing tweak) and the sign-in panel. */
+  @keyframes df-rise {
+    from {
+      transform: translateY(16px);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
+  .df-rise {
+    animation: df-rise 0.55s var(--ease-standard) both;
+  }
+
+  /* Blink cursor — placard "tap to authenticate" cue + boot terminal. */
+  @keyframes df-cursor {
+    50% {
+      opacity: 0;
+    }
+  }
+  .df-cursor {
+    animation: df-cursor 1s steps(1) infinite;
+  }
+
+  /* ── Animated circuit emblem (LoginEmblem) ────────────────────────────────
+     Base raster + breathing aura + per-trace light beams. Everything is
+     transform / opacity / stroke only, so the reduced-motion guard at the end of
+     the file freezes it to a clean static state. */
+  .login-emblem {
+    position: relative;
+    width: min(74vw, 300px);
+    aspect-ratio: 934 / 936;
+    /* Perpetual gentle float (translateY only; base = translateY(0), so it rests
+       cleanly when the guard collapses it). The entrance rise lives on the
+       WRAPPING .df-rise element — separate node — so the two transform animations
+       never collide on one element. */
+    animation: dhq-float 6.5s ease-in-out infinite;
+  }
+  @keyframes dhq-float {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-8px);
+    }
+  }
+
+  /* Breathing aura. Centered with inset:0 + margin:auto (NOT a keyframe transform)
+     so it stays centered when the guard freezes the animation; the keyframe only
+     touches opacity + scale. Rests at opacity 0.5 (its base) under reduced motion. */
+  .login-emblem__aura {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 86%;
+    height: 86%;
+    border-radius: 50%;
+    opacity: 0.5;
+    background: radial-gradient(
+      circle,
+      color-mix(in oklab, var(--brand) 55%, transparent),
+      color-mix(in oklab, var(--accent) 18%, transparent) 55%,
+      transparent 72%
+    );
+    filter: blur(26px);
+    z-index: 0;
+    animation: dhq-aura 5.2s ease-in-out infinite;
+  }
+  @keyframes dhq-aura {
+    0%,
+    100% {
+      opacity: 0.32;
+      transform: scale(0.92);
+    }
+    50% {
+      opacity: 0.62;
+      transform: scale(1.04);
+    }
+  }
+
+  .login-emblem__base {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    z-index: 1;
+    filter: saturate(1.08) drop-shadow(0 10px 30px rgba(0, 0, 0, 0.5));
+  }
+
+  /* Beam overlay. The glow + screen blend live ONCE on the group (not per path):
+     120 per-path drop-shadow filters would jank on a phone. */
+  .login-emblem__beams {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 2;
+    pointer-events: none;
+    mix-blend-mode: screen;
+    filter: drop-shadow(
+      0 0 4px color-mix(in oklab, var(--accent) 70%, transparent)
+    );
+  }
+  /* Each beam: one short bright dash (6) + long gap (94) over pathLength=100, so a
+     single beam travels each wire as the offset animates 100 → 0. The 100% (rest)
+     state leaves a static dash — what the reduced-motion guard freezes to. Color is
+     uniform bright cyan-white; per-trace stagger comes from inline animation-delay. */
+  .login-emblem__beam {
+    fill: none;
+    stroke: color-mix(in oklab, var(--accent) 55%, white);
+    stroke-width: 3.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-dasharray: 6 94;
+    animation: dhq-beam 2.4s linear infinite;
+  }
+  @keyframes dhq-beam {
+    from {
+      stroke-dashoffset: 100;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  /* Primary CTA — "Tap to authenticate". Resting = cyan rest-glow + gradient;
+     hover/focus = gold "armed" glow + 2px lift; active = deeper gold ring. Built on
+     the shared --gold-glow recipe. The transform is on the button ITSELF (never a
+     sticky/scroll ancestor), so it's safe; it freezes under the reduced-motion guard. */
+  .door-cta {
+    width: 100%;
+    min-height: 58px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 11px;
+    padding: 16px 22px;
+    border-radius: 11px;
+    border: 1px solid color-mix(in oklab, var(--accent) 45%, transparent);
+    background: linear-gradient(180deg, var(--surface), var(--surface-2));
+    color: var(--foreground);
+    font-family: var(--font-lato);
+    font-weight: 800;
+    font-size: 17px;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--accent) 12%, transparent),
+      0 0 18px -6px color-mix(in oklab, var(--accent) 50%, transparent);
+    transition:
+      transform var(--motion-fast) var(--ease-standard),
+      box-shadow var(--motion-fast) var(--ease-standard),
+      border-color var(--motion-fast) var(--ease-standard),
+      color var(--motion-fast) var(--ease-standard);
+  }
+  .door-cta:hover,
+  .door-cta:focus-visible {
+    /* Transparent outline (not `none`) so the focus state stays visible under
+       Windows High Contrast / forced-colors, where the box-shadow ring is dropped. */
+    outline: 2px solid transparent;
+    border-color: var(--highlight);
+    color: color-mix(in oklab, var(--foreground) 55%, white);
+    transform: translateY(-2px);
+    box-shadow:
+      var(--gold-glow),
+      0 18px 40px -20px rgba(0, 0, 0, 0.9);
+  }
+  .door-cta:active {
+    transform: translateY(0);
+    border-color: var(--highlight);
+    box-shadow:
+      0 0 0 1px var(--highlight),
+      0 0 30px -2px color-mix(in oklab, var(--highlight) 70%, transparent);
+  }
+
+  /* "Back to the door" — the return path from the sign-in panel to the placard,
+     so the door is a two-way pivot, not a one-time gate. Muted mono link that
+     arms to the accent on hover/focus. */
+  .door-back {
+    transition: color var(--motion-fast) var(--ease-standard);
+  }
+  .door-back:hover,
+  .door-back:focus-visible {
+    color: var(--accent);
+  }
+  /* Explicit focus ring — the color shift alone is too weak a focus indicator,
+     and stays visible under forced-colors where a box-shadow ring is dropped. */
+  .door-back:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+}
+
 /* Global reduced-motion guard — MUST stay the last rule in the file. Every
    transition/animation in the app passes through here, so any effect added in
    M12+ is reduced-motion-safe by default (don't wrap effects in no-preference;
