@@ -55,7 +55,9 @@ production — that's local test data.
    - `AUTH_GOOGLE_ID`, `AUTH_GOOGLE_SECRET` (from step 5)
    - `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`
    - `AUTH_RESEND_KEY`, `EMAIL_FROM` (from step 5b) — magic-link email
-   - `BLOB_READ_WRITE_TOKEN` (from step 4b) — deploy-photo storage; **required in production**
+   - Blob storage credential (deploy/sign photos), **required in production** — either OIDC
+     (`BLOB_STORE_ID`, auto-injected when you connect the store in step 4b) **or** a static
+     `BLOB_READ_WRITE_TOKEN`
    - `CRON_SECRET` — generate: `openssl rand -base64 32`; **optional** (not required at startup) — enables the daily login-audit retention purge; the purge route 401s without it (see step 4c)
    - `BOOTSTRAP_ADMIN_EMAILS` — comma-separated admin emails
    - `CSP_MODE=report` for the first deploy (flip to `enforce` in step 7)
@@ -64,15 +66,18 @@ production — that's local test data.
    - `NEXTAUTH_URL` is set by Vercel automatically; override only for a custom domain.
 3. Deploy.
 
-## 4b. Vercel Blob — deploy photos **(you)**
-The `/deploy` floor tool stores optional deploy photos in **Vercel Blob** (private access; served
-only through the app's auth-gated route, never a public URL).
-1. Vercel project → **Storage** → create a **Blob** store and connect it to this project.
-2. Connecting auto-injects `BLOB_READ_WRITE_TOKEN` into the project env. Confirm it's present for
-   **all environments** (preview runs as production — see step 3's note).
-   > **Required in production** — `assertProdEnv()` (`lib/env.ts`) fails startup without it,
-   > rather than letting the first floor photo-upload throw. Local dev works without it; photo
-   > upload is simply disabled until the token is set.
+## 4b. Vercel Blob — deploy/sign photos **(you)**
+The `/deploy` floor tool and sign-preview uploads store photos in **Vercel Blob** (private access;
+served only through the app's auth-gated route, never a public URL).
+1. Vercel project → **Storage** → create a **Blob** store and **Connect to Project**.
+2. Connecting provisions **OIDC**: Vercel auto-injects `BLOB_STORE_ID` plus the short-lived,
+   auto-rotated `VERCEL_OIDC_TOKEN` — the app's server-side put/get/del use it, so there's no
+   static secret to manage. (Alternatively, create the store with a read-write token and set
+   `BLOB_READ_WRITE_TOKEN` — needed off-Vercel, e.g. a self-hosted box.) Confirm the
+   credential is present for **all environments** (preview runs as production — see step 3's note).
+   > **Required in production** — `assertProdEnv()` (`lib/env.ts`) fails startup unless **either**
+   > `BLOB_STORE_ID` (OIDC) **or** `BLOB_READ_WRITE_TOKEN` is set, rather than letting the first
+   > photo upload throw. Local dev works without either; photo upload is simply disabled.
 
 ## 4c. Vercel Cron — login-audit retention **(you)**
 The app records every sign-in and denied attempt in the audit log with coarse location and device.
@@ -86,6 +91,7 @@ Google Cloud Console → APIs & Services → Credentials → your OAuth client �
 **Authorized redirect URIs**, add:
 ```
 https://<your-vercel-domain>/api/auth/callback/google
+https://<apex-domain>/api/auth/callback/google   # only if you enable the apex landing (5c)
 ```
 (keep `http://localhost:3000/api/auth/callback/google` for local dev).
 Copy the client ID/secret into the Vercel env vars (step 4) and redeploy if needed.
@@ -101,6 +107,18 @@ Magic-link sign-in (for teammates who can't use Google OAuth) needs an email sen
    `Defacement SMS <noreply@yourdomain.com>`.
    > Both are **required in production** — `assertProdEnv()` fails startup without them. Until the
    > domain is verified, Resend only delivers to your own account email (fine for a local test).
+
+## 5c. Public landing on the apex domain **(you)** — optional
+The landing "door" can serve the bare apex domain (e.g. `example.com`) while the app stays on a
+subdomain (e.g. `app.example.com`) — both are the same Vercel project. To enable it:
+1. Point the apex domain at this Vercel project (project → **Domains** → add `example.com`).
+2. Set `LANDING_APEX_HOST=example.com` **and** `AUTH_TRUST_HOST=true` in the Vercel env (all
+   environments). Sign-in completes on the apex host, so NextAuth must trust the request host.
+3. Add the apex Google callback `https://example.com/api/auth/callback/google` (step 5).
+
+Result: visiting the apex shows the landing door (animated emblem → boot → sign-in) at `/login`
+with the URL staying on the apex; the app subdomain is unaffected, and an already-authenticated apex
+visitor just gets the app at `/`. Leave `LANDING_APEX_HOST` unset for a single-domain deploy (no behavior change).
 
 ## 6. First admin login **(you)**
 1. Visit `https://<domain>/login` and sign in with a `BOOTSTRAP_ADMIN_EMAILS` Google account.

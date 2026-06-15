@@ -1,17 +1,17 @@
 "use client";
 
-// Per-row status control on the /signs list: a deliberate two-step change so a
-// stray click can't re-stage a sign. Click a status to ARM it (it highlights and
-// a Confirm button appears); click Confirm to commit. Clicking the armed status
-// again — or arming a different one — cancels/re-arms. The current status renders
-// as a non-interactive badge.
+// Per-row status on the /signs list. At rest it renders as a SINGLE current-status
+// pill (matches the design — one badge per row, not the full stage grid). Click the
+// pill to open the inline changer: pick a status to ARM it (it highlights and a
+// Confirm appears), then Confirm to commit; clicking the current status again closes
+// without changing. The two-step arm→confirm keeps a stray tap from re-staging a sign.
 //
-// Commit goes through the DURABLE status queue (M11 #2): enqueue() writes the
-// change to an IndexedDB outbox and syncs in the background, so a change made on a
-// flaky floor survives connectivity drops. The displayed status reads the queue's
-// optimistic overlay on top of the server-rendered status, with a queued/failed
-// indicator. If no queue provider is mounted (shouldn't happen under /signs), it
-// degrades to submitting the updateSignStatus Server Action form online.
+// Commit goes through the DURABLE status queue (M11 #2): enqueue() writes the change
+// to an IndexedDB outbox and syncs in the background, so a change made on a flaky
+// floor survives connectivity drops. The displayed status reads the queue's optimistic
+// overlay on top of the server-rendered status, with a queued/failed indicator. If no
+// queue provider is mounted (shouldn't happen under /signs), it degrades to submitting
+// the updateSignStatus Server Action form online.
 
 import { useState } from "react";
 
@@ -28,6 +28,7 @@ export function RowStatusControl({
   signId: number;
   status: SignStatus;
 }) {
+  const [open, setOpen] = useState(false);
   const [armed, setArmed] = useState<SignStatus | null>(null);
   const sync = useStatusSync();
 
@@ -37,6 +38,38 @@ export function RowStatusControl({
   const current = (entry?.status as SignStatus | undefined) ?? status;
   const indicator = entry?.indicator;
 
+  const syncMark = (
+    <>
+      {indicator === "queued" && (
+        <span className="text-amber-300" title="Queued — syncing">
+          ⟳
+        </span>
+      )}
+      {indicator === "failed" && (
+        <span className="text-danger" title="Sync failed — see the queue">
+          !
+        </span>
+      )}
+    </>
+  );
+
+  // Resting state: a single current-status pill (one badge per row).
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title="Change status"
+        className={`badge ${statusBadgeClass(current)} cursor-pointer`}
+      >
+        {statusLabel(current)}
+        {syncMark}
+      </button>
+    );
+  }
+
+  // Open: the inline changer (arm a different status, then Confirm). Clicking the
+  // current status closes without a change.
   return (
     <form
       action={updateSignStatus.bind(null, signId)}
@@ -45,19 +78,19 @@ export function RowStatusControl({
       {SIGN_STATUSES.map((s) => {
         if (s === current) {
           return (
-            <span key={s} className={`badge ${statusBadgeClass(s)}`}>
+            <button
+              key={s}
+              type="button"
+              onClick={() => {
+                setArmed(null);
+                setOpen(false);
+              }}
+              title="Keep current status (close)"
+              className={`badge ${statusBadgeClass(s)} cursor-pointer`}
+            >
               {statusLabel(s)}
-              {indicator === "queued" && (
-                <span className="text-amber-300" title="Queued — syncing">
-                  ⟳
-                </span>
-              )}
-              {indicator === "failed" && (
-                <span className="text-danger" title="Sync failed — see the queue">
-                  !
-                </span>
-              )}
-            </span>
+              {syncMark}
+            </button>
           );
         }
         const isArmed = armed === s;
@@ -91,7 +124,10 @@ export function RowStatusControl({
                 e.preventDefault();
                 const form = e.currentTarget.form;
                 sync.enqueue(signId, armed).then(
-                  () => setArmed(null),
+                  () => {
+                    setArmed(null);
+                    setOpen(false);
+                  },
                   () => {
                     // IndexedDB unavailable (private mode / quota): fall back to
                     // the online Server Action so the change isn't silently

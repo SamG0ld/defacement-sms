@@ -2,6 +2,10 @@ import { redirect } from "next/navigation";
 
 import { auth, signIn } from "@/lib/auth";
 
+import { LoginDoor } from "./_components/LoginDoor";
+import { LoginEmblem } from "./_components/LoginEmblem";
+import { resolveInitialPhase } from "./_components/door-logic";
+
 type LoginPageProps = {
   searchParams: Promise<{ callbackUrl?: string; error?: string; type?: string }>;
 };
@@ -40,6 +44,11 @@ function safeRelativePath(url?: string): string {
   return "/";
 }
 
+// Server wrapper for the public login "door". Stays a server component so the
+// pre-auth check + redirect run server-side (no client flash of the sign-in
+// screen for an already-authenticated user) and so the closed-registration
+// `signIn` actions never ship to the client. The door's landing→boot→signin
+// animation lives entirely in the LoginDoor client leaf.
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const session = await auth();
   const { callbackUrl, error, type } = await searchParams;
@@ -53,89 +62,36 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
     redirect(dest);
   }
 
+  const initialPhase = resolveInitialPhase({ callbackUrl, type, error });
+
+  // Bound server actions — same closed-registration auth as before, just passed
+  // to the client door so its <form action> posts hit real NextAuth sign-in.
+  async function googleAction() {
+    "use server";
+    await signIn("google", { redirectTo: dest });
+  }
+  async function magicLinkAction(formData: FormData) {
+    "use server";
+    const email = String(formData.get("email") ?? "").trim();
+    // Validate the address shape server-side — the client <input type="email">
+    // is bypassable via a direct POST. On a malformed value, short-circuit to the
+    // same "link dispatched" confirmation WITHOUT calling signIn: identical to a
+    // valid-but-unknown email, so the door never reveals whether an address is
+    // real (no enumeration) and garbage never enters the auth pipeline.
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      redirect("/login?type=email");
+    }
+    await signIn("resend", { email, redirectTo: dest });
+  }
+
   return (
-    <div className="relative flex min-h-full flex-1 items-center justify-center overflow-hidden bg-zinc-950 p-4">
-      <div aria-hidden className="dot-grid pointer-events-none absolute inset-0" />
-      <div className="relative z-10 w-full max-w-sm space-y-6 rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900 to-zinc-950 p-8 text-zinc-100 shadow-2xl shadow-black/50">
-        <div className="space-y-1 text-center">
-          <h1 className="text-xl font-semibold">Defacement SMS</h1>
-          <p className="text-xs text-zinc-400">Sign in to continue</p>
-        </div>
-
-        {error && (
-          <div className="rounded border border-red-900 bg-red-950 px-3 py-2 text-xs text-red-200">
-            {errorMessage(error)}
-          </div>
-        )}
-
-        {sent ? (
-          <div className="space-y-4">
-            <div className="rounded border border-emerald-900 bg-emerald-950 px-3 py-3 text-sm text-emerald-200">
-              <p className="font-medium">Check your inbox.</p>
-              <p className="mt-1 text-xs text-emerald-300/80">
-                If that email is on the team, a one-time sign-in link is on its
-                way. It expires in 15 minutes. Don&apos;t see it? Check spam,
-                or try again.
-              </p>
-            </div>
-            <a
-              href={`/login${callbackUrl ? `?callbackUrl=${encodeURIComponent(dest)}` : ""}`}
-              className="block text-center text-xs text-zinc-400 underline-offset-2 hover:underline"
-            >
-              Use a different sign-in method
-            </a>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <form
-              action={async () => {
-                "use server";
-                await signIn("google", { redirectTo: dest });
-              }}
-            >
-              <button
-                type="submit"
-                className="btn-primary w-full rounded px-4 py-2 text-sm font-medium"
-              >
-                Continue with Google
-              </button>
-            </form>
-
-            <div className="flex items-center gap-3 text-[11px] uppercase tracking-wide text-zinc-600">
-              <span className="h-px flex-1 bg-zinc-800" />
-              or
-              <span className="h-px flex-1 bg-zinc-800" />
-            </div>
-
-            <form
-              action={async (formData: FormData) => {
-                "use server";
-                const email = String(formData.get("email") ?? "").trim();
-                await signIn("resend", { email, redirectTo: dest });
-              }}
-              className="space-y-2"
-            >
-              <input
-                type="email"
-                name="email"
-                required
-                autoComplete="email"
-                placeholder="you@example.com"
-                className="w-full rounded border border-zinc-700 bg-black px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600"
-              />
-              <button
-                type="submit"
-                className="w-full rounded border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 hover:bg-zinc-800"
-              >
-                Email me a sign-in link
-              </button>
-              <p className="text-center text-[11px] text-zinc-500">
-                Works with any email — no password needed.
-              </p>
-            </form>
-          </div>
-        )}
-      </div>
-    </div>
+    <LoginDoor
+      initialPhase={initialPhase}
+      sent={sent}
+      errorMessage={error ? errorMessage(error) : null}
+      googleAction={googleAction}
+      magicLinkAction={magicLinkAction}
+      emblem={<LoginEmblem />}
+    />
   );
 }

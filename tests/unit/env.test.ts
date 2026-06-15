@@ -39,9 +39,15 @@ describe("assertProdEnv", () => {
   });
 
   it("names the missing variables", () => {
-    stubProd();
-    vi.stubEnv("BLOB_READ_WRITE_TOKEN", "");
-    expect(() => assertProdEnv()).toThrow(/BLOB_READ_WRITE_TOKEN/);
+    // Both blob credentials absent so the either/or branch reports it
+    // deterministically (independent of any ambient BLOB_STORE_ID).
+    stubProd({ BLOB_READ_WRITE_TOKEN: "", BLOB_STORE_ID: "" });
+    expect(() => assertProdEnv()).toThrow(/BLOB_READ_WRITE_TOKEN or BLOB_STORE_ID/);
+  });
+
+  it("accepts OIDC blob auth (BLOB_STORE_ID) without a static token", () => {
+    stubProd({ BLOB_READ_WRITE_TOKEN: "", BLOB_STORE_ID: "store_abc123" });
+    expect(() => assertProdEnv()).not.toThrow();
   });
 
   it("rejects the .env.example placeholder secret", () => {

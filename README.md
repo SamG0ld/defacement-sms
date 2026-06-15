@@ -19,6 +19,13 @@ workflow with a database-backed web app.
 
 ## What's built
 
+- **Public landing "door"** — the public entry at `/login` is one same-origin flow: a mono kicker,
+  a `DEFACEMENT HQ` wordmark, an **animated DC34 spray-can circuit emblem** (light beams travel
+  along each circuit trace via SVG `stroke-dashoffset`), a `GOONS ONLY BEYOND THIS POINT` threshold
+  line, and a `Tap to authenticate` CTA that plays a terminal boot and wipes into the sign-in screen
+  (reduced-motion users skip straight to sign-in). On the apex domain (`LANDING_APEX_HOST`) the bare
+  URL serves the door; the app subdomain is unchanged. The auth underneath is exactly the two methods
+  below — the door only restyles the surface (see [Deploy](DEPLOY.md) §5c to enable the apex).
 - **Two sign-in methods** via NextAuth v5, with JWT sessions (7-day lifetime, 24-hour refresh):
   **Google OAuth** and **passwordless magic-link email** (Resend) for teammates whose email
   backend isn't Google. Both honor closed registration.

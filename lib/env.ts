@@ -15,15 +15,21 @@ const REQUIRED_PROD_ENV = [
   // without a way in.
   "AUTH_RESEND_KEY",
   "EMAIL_FROM",
-  // Vercel Blob token for deploy photos (lib/deploy/blob.ts). Required in prod so
-  // a deploy without it fails at startup instead of silently throwing the first
-  // time a crew uploads a photo from the floor.
-  "BLOB_READ_WRITE_TOKEN",
 ] as const;
 
 export function assertProdEnv(): void {
   if (process.env.NODE_ENV !== "production") return;
-  const missing = REQUIRED_PROD_ENV.filter((key) => !process.env[key]);
+  const missing: string[] = REQUIRED_PROD_ENV.filter((key) => !process.env[key]);
+  // Vercel Blob (deploy/sign photos, lib/blob-image.ts) authenticates with EITHER
+  // a static read-write token OR OIDC (BLOB_STORE_ID + the platform-injected,
+  // auto-rotated VERCEL_OIDC_TOKEN). Connecting a store via "Connect to Project"
+  // provisions OIDC (BLOB_STORE_ID), not BLOB_READ_WRITE_TOKEN — and the app only
+  // does server-side put/get/del, which OIDC fully supports. Require either, so a
+  // deploy with no blob credential still fails loudly, but an OIDC-connected
+  // store isn't rejected for lacking the legacy static token.
+  if (!process.env.BLOB_READ_WRITE_TOKEN && !process.env.BLOB_STORE_ID) {
+    missing.push("BLOB_READ_WRITE_TOKEN or BLOB_STORE_ID");
+  }
   if (missing.length > 0) {
     throw new Error(
       `Missing required production environment variables: ${missing.join(", ")}`,
