@@ -1,9 +1,8 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 
 import { prisma } from "@/lib/db";
 import { getAllFloorMaps, getEnabledFloorMaps } from "@/lib/floor-maps";
-import { getSession } from "@/lib/session";
+import { requirePageRole } from "@/lib/page-guards";
 
 import {
   createFloorMap,
@@ -14,6 +13,7 @@ import {
   setFloorEnabled,
   setRoomPin,
 } from "./actions";
+import { DeleteFloorButton } from "./_components/DeleteFloorButton";
 import { FloorPinView } from "./_components/FloorPinView";
 import { MapPinPicker } from "./_components/MapPinPicker";
 
@@ -25,8 +25,7 @@ type Props = {
 // it, and manage the floor images themselves behind a "Manage floors" disclosure.
 // Replaces the former /map hub + /map/floors + /map/rooms split.
 export default async function MapPage({ searchParams }: Props) {
-  const session = await getSession();
-  if (session?.user?.role !== "admin") redirect("/");
+  await requirePageRole("admin");
 
   const sp = await searchParams;
   const [enabled, allMaps, zones] = await Promise.all([
@@ -186,6 +185,12 @@ export default async function MapPage({ searchParams }: Props) {
                             Replace
                           </button>
                         </form>
+
+                        <DeleteFloorButton
+                          id={m.id}
+                          label={m.label}
+                          pinnedSignCount={m.pinnedSignCount}
+                        />
                       </div>
                     </div>
                   </li>
@@ -271,6 +276,7 @@ export default async function MapPage({ searchParams }: Props) {
                   <MapPinPicker
                     src={fm.src}
                     label={fm.label}
+                    imageWidth={fm.width}
                     initial={
                       selected.mapX !== null && selected.mapY !== null
                         ? { x: selected.mapX, y: selected.mapY }
@@ -285,6 +291,7 @@ export default async function MapPage({ searchParams }: Props) {
                 <FloorPinView
                   src={fm.src}
                   label={fm.label}
+                  imageWidth={fm.width}
                   pins={placed.map((r) => ({
                     key: r.id,
                     xPct: r.mapX as number,

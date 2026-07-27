@@ -8,6 +8,7 @@ import {
   enqueueDeploy,
 } from "@/app/(app)/deploy/_lib/outbox";
 import { allEntries, getPhoto } from "@/app/(app)/deploy/_lib/idb";
+import { MAX_CLAIM_BATCH } from "@/lib/deploy/contract";
 import type {
   ClaimPayload,
   DeployPayload,
@@ -25,7 +26,8 @@ beforeEach(() => {
 
 describe("enqueueClaim / enqueueRelease — durable outbox entry shape", () => {
   it("persists a pending claim entry with the right payload", async () => {
-    const entry = await enqueueClaim(7, [1, 2, 3]);
+    const [entry, ...rest] = await enqueueClaim(7, [1, 2, 3]);
+    expect(rest).toEqual([]); // under the cap — exactly one entry
     expect(entry).toMatchObject({
       kind: "claim",
       status: "pending",
@@ -40,12 +42,53 @@ describe("enqueueClaim / enqueueRelease — durable outbox entry shape", () => {
   });
 
   it("persists a pending release entry", async () => {
-    const entry = await enqueueRelease(7, [9]);
+    const [entry] = await enqueueRelease(7, [9]);
     expect(entry).toMatchObject({
       kind: "release",
       status: "pending",
       payload: { crewId: 7, signIds: [9] } satisfies ReleasePayload,
     });
+  });
+});
+
+// The server caps a claim/release batch at MAX_CLAIM_BATCH and rejects the whole
+// request with a Zod 400 past it. Chunk at enqueue so "claim this entire zone"
+// can't become an unrecoverable error in a volunteer's hand. (#214)
+describe("enqueueClaim / enqueueRelease — chunking at MAX_CLAIM_BATCH (#214)", () => {
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+
+  it("splits an over-cap claim into entries no larger than the cap", async () => {
+    const entries = await enqueueClaim(7, ids(MAX_CLAIM_BATCH + 1));
+    expect(entries).toHaveLength(2);
+    expect((entries[0].payload as ClaimPayload).signIds).toHaveLength(
+      MAX_CLAIM_BATCH,
+    );
+    expect((entries[1].payload as ClaimPayload).signIds).toEqual([
+      MAX_CLAIM_BATCH + 1,
+    ]);
+  });
+
+  it("gives each chunk its own clientId so a partial drain keeps what landed", async () => {
+    const entries = await enqueueClaim(7, ids(MAX_CLAIM_BATCH * 2));
+    const clientIds = entries.map((e) => e.clientId);
+    expect(new Set(clientIds).size).toBe(entries.length);
+    for (const id of clientIds) expect(id).toMatch(UUID_V4);
+  });
+
+  it("persists every chunk, losing no signId", async () => {
+    const all = ids(MAX_CLAIM_BATCH * 2 + 7);
+    await enqueueClaim(7, all);
+    const stored = await allEntries();
+    expect(stored).toHaveLength(3);
+    expect(
+      stored.flatMap((e) => (e.payload as ClaimPayload).signIds),
+    ).toEqual(all);
+  });
+
+  it("chunks releases the same way", async () => {
+    const entries = await enqueueRelease(7, ids(MAX_CLAIM_BATCH + 5));
+    expect(entries).toHaveLength(2);
+    expect((entries[1].payload as ReleasePayload).signIds).toHaveLength(5);
   });
 });
 
@@ -57,7 +100,6 @@ describe("enqueueDeploy — deploy + optional photo", () => {
     const p = all[0].payload as DeployPayload;
     expect(all[0].kind).toBe("deploy");
     expect(p.signId).toBe(5);
-    expect(p.hasPhoto).toBe(false);
     expect(p.notes).toBe("north hall");
   });
 
@@ -71,7 +113,6 @@ describe("enqueueDeploy — deploy + optional photo", () => {
     const deployEntry = all.find((e) => e.kind === "deploy")!;
     const photoEntry = all.find((e) => e.kind === "photo")!;
     expect(deployEntry.clientId).toBe(deploy.clientId);
-    expect((deployEntry.payload as DeployPayload).hasPhoto).toBe(true);
 
     // Photo bytes are stashed under the DEPLOY's clientId so the upload finds them.
     const photoPayload = photoEntry.payload as PhotoPayload;
@@ -98,7 +139,7 @@ describe("newClientId — UUID v4 fallback when crypto.randomUUID is absent", ()
       randomUUID: undefined,
       getRandomValues: real.getRandomValues.bind(real),
     });
-    const entry = await enqueueClaim(1, [1]);
+    const [entry] = await enqueueClaim(1, [1]);
     expect(entry.clientId).toMatch(UUID_V4);
   });
 });

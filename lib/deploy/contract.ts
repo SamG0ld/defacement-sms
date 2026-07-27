@@ -33,9 +33,11 @@ export const crewId = z.number().int().positive();
 
 // Batch caps: generous enough for "claim a whole zone's stack" but bounded so a
 // single request can't blow the pool (lib/db.ts max:3) or the body limit.
-// MAX_DEPLOY_BATCH is exported for the client outbox drain, which chunks its
-// batched deploy POSTs to stay under the server's cap.
-const MAX_CLAIM_BATCH = 500;
+// All three are exported for the clients, which chunk their batched POSTs to stay
+// under the server's cap rather than eating a hard Zod 400 they can't recover
+// from on a dead floor. MAX_CLAIM_BATCH was previously module-local, so the
+// claim/release path had no cap to chunk against. (#214)
+export const MAX_CLAIM_BATCH = 500;
 export const MAX_DEPLOY_BATCH = 200;
 
 // ── Crews ───────────────────────────────────────────────────────────────────
@@ -83,6 +85,13 @@ export type ClaimResponse = {
 // `clientId` is accepted for the offline outbox to dedupe a queued release on
 // replay; release is naturally idempotent server-side (releasing an unheld claim
 // is a no-op), so it isn't persisted — it just lets the client clear its queue.
+//
+// `crewId` names the crew whose claims to drop, and it is honored even for a
+// lead/admin force-release: a lead clearing another crew's stale lock has to name
+// THAT crew, not their own (#175). Naming the wrong crew is the same no-op as
+// releasing an unheld claim — 200 with an empty `released` array and no audit
+// row — so a caller checking whether a force-release worked must look at
+// `released`, not just the status code.
 export const releaseRequestSchema = z.object({
   clientId,
   crewId,
@@ -108,7 +117,11 @@ export const deployEventSchema = z.object({
     { message: "deployedAt is outside the acceptable range" },
   ), // client's local deploy time (ISO string in JSON)
   notes: z.string().max(2000).optional(),
-  hasPhoto: z.boolean().default(false), // photo trickles up separately, after
+  // DEPRECATED (#102): server-IGNORED. Photo presence is derived solely from
+  // photoUrl (the photo uploads separately, after the event). Kept (optional) in
+  // this frozen Phase-0 contract for shape stability + back-compat, but the client
+  // no longer sends it — so there is no client/server "has photo" divergence.
+  hasPhoto: z.boolean().optional(),
 });
 export type DeployEventInput = z.infer<typeof deployEventSchema>;
 
@@ -120,7 +133,21 @@ export type DeployRequest = z.infer<typeof deployRequestSchema>;
 // Per-event outcome:
 //   applied   — this event set the sign to `deployed` (the first to arrive)
 //   duplicate — same clientId already processed (idempotent replay, no-op)
-//   conflict  — sign was already deployed by a different event; logged, no change
+//   conflict  — the sign was NOT changed by this event. Permanent: the client
+//               drains the entry rather than retrying. Three distinct causes now
+//               share this one status, because the wire union is frozen:
+//                 1. the sign was already deployed by a different event (the
+//                    original meaning; logged for the after-action record);
+//                 2. the sign is soft-removed (`archived`) and a deploy event may
+//                    not resurrect it — server-side reason is
+//                    ARCHIVED_REFUSAL_REASON, "Restore this removed sign from the
+//                    Removed view" (#268);
+//                 3. the whole batch rolled back on a unique violation, so nothing
+//                    in it applied (#268).
+//               NOTE: the deploy PWA renders every conflict as "already deployed
+//               by another crew" (app/(app)/deploy/_lib/store.ts), which is now
+//               wrong for causes 2 and 3. Surfacing the real reason needs a
+//               `reason` field on DeployResult — the deploy-side twin of #266.
 export const deployResultStatuses = ["applied", "duplicate", "conflict"] as const;
 export type DeployResultStatus = (typeof deployResultStatuses)[number];
 
@@ -141,6 +168,12 @@ export type DeployResponse = {
 export type PhotoUploadResponse = {
   clientId: string;
   photoUrl: string; // app-internal, auth-gated serving URL (not a public Blob URL)
+  // Whether this photo also became the Sign's cached photo. False when the deploy
+  // event LOST its race (status `conflict`): the photo is still kept on the event
+  // for the after-action log, but the sign keeps the winning deploy's photo, so
+  // `photoUrl` is the event-scoped URL and the client must not paint it onto the
+  // sign. (#231)
+  cachedOnSign: boolean;
 };
 
 // ── Sync (pull) ───────────────────────────────────────────────────────────────
@@ -153,6 +186,11 @@ export type DeploySignView = {
   signText: string;
   status: string; // SignStatus
   zoneId: number | null;
+  // The zone's human-readable code (e.g. "LVCC-L1") — what crews navigate by.
+  // Carried alongside the FK so the floor UI never has to render a raw database
+  // id, and so the map layer can label a pin without a second lookup. Null iff
+  // zoneId is null. (#190)
+  zoneCode: string | null;
   claimedByCrewId: number | null;
   claimedByUserId: string | null;
   claimedAt: string | null; // ISO

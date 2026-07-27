@@ -22,9 +22,19 @@ vi.mock("@/lib/auth", () => ({
   signOut: vi.fn(),
   handlers: {},
 }));
+// Every action here is per-actor rate limited (#194) — mock the limiter like the
+// sibling action suites so one shared 60/min budget can't make this suite flaky.
+vi.mock("@/lib/ratelimit", () => ({
+  checkMutationRateLimit: vi.fn(async () => ({
+    success: true,
+    remaining: 59,
+    reset: 0,
+  })),
+}));
 
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { checkMutationRateLimit } from "@/lib/ratelimit";
 import {
   addEquipmentType,
   deleteEquipmentType,
@@ -82,6 +92,29 @@ describe("addEquipmentType", () => {
     const url = await captureRedirect(addEquipmentType(form({ name: "TEST Dup" })));
     expect(url).toMatch(/already exists/i);
   });
+
+  // #229: category is free text in the DB and only the <select> constrained it,
+  // so a directly-called action could store "easel" — classified as an asset but
+  // reconciled into its own bucket, silently understating the gap to order.
+  it("canonicalizes a known category's casing", async () => {
+    await addEquipmentType(form({ name: "TEST Lowercase", category: "  easel " }));
+    const t = await prisma.equipmentType.findUnique({ where: { name: "TEST Lowercase" } });
+    expect(t?.category).toBe("Easel");
+  });
+
+  it("refuses a category outside the known set", async () => {
+    const url = await captureRedirect(
+      addEquipmentType(form({ name: "TEST Bogus", category: "Easels" })),
+    );
+    expect(url).toMatch(/category/i);
+    expect(await prisma.equipmentType.findUnique({ where: { name: "TEST Bogus" } })).toBeNull();
+  });
+
+  it("still accepts a blank category (consumable)", async () => {
+    await addEquipmentType(form({ name: "TEST Blank", category: "" }));
+    const t = await prisma.equipmentType.findUnique({ where: { name: "TEST Blank" } });
+    expect(t?.category).toBeNull();
+  });
 });
 
 describe("updateEquipmentType", () => {
@@ -112,6 +145,35 @@ describe("updateEquipmentType", () => {
     const audit = await prisma.auditLog.findFirst({ where: { action: "equipment.update" } });
     expect(audit?.detail).toContain("TEST Audited");
   });
+
+  // The allowlist can't strand a row that predates it: EquipmentManageRow
+  // re-offers a legacy custom category, so submitting it unchanged must pass —
+  // while switching to a NEW unknown value is refused (#229).
+  it("lets an edit keep a pre-existing custom category", async () => {
+    const t = await seedType("TEST Legacy", "Supplies");
+    await updateEquipmentType(t.id, 2026, form({ name: "TEST Legacy Renamed", category: "Supplies" }));
+    const updated = await prisma.equipmentType.findUnique({ where: { id: t.id } });
+    expect(updated?.name).toBe("TEST Legacy Renamed");
+    expect(updated?.category).toBe("Supplies");
+  });
+
+  it("refuses switching to a different unknown category", async () => {
+    const t = await seedType("TEST Legacy2", "Supplies");
+    const url = await captureRedirect(
+      updateEquipmentType(t.id, 2026, form({ name: "TEST Legacy2", category: "Fasteners" })),
+    );
+    expect(url).toMatch(/category/i);
+    expect((await prisma.equipmentType.findUnique({ where: { id: t.id } }))?.category).toBe(
+      "Supplies",
+    );
+  });
+
+  it("reports a missing item instead of a generic failure", async () => {
+    const url = await captureRedirect(
+      updateEquipmentType(99999999, 2026, form({ name: "TEST Ghost", category: "Stand" })),
+    );
+    expect(url).toMatch(/not found/i);
+  });
 });
 
 describe("deleteEquipmentType", () => {
@@ -130,6 +192,27 @@ describe("deleteEquipmentType", () => {
     expect(url).toMatch(/saved counts|history/i);
     // Still present — the guard protected it.
     expect(await prisma.equipmentType.findUnique({ where: { id: t.id } })).not.toBeNull();
+  });
+});
+
+describe("per-actor mutation rate limit (#194)", () => {
+  it("refuses a count save over budget, without writing", async () => {
+    const t = await seedType("TEST Throttled");
+    vi.mocked(checkMutationRateLimit).mockResolvedValueOnce({
+      success: false,
+      remaining: 0,
+      reset: 0,
+    });
+
+    const url = await captureRedirect(
+      upsertInventory(t.id, 2026, form({ countStartOfCon: "7" })),
+    );
+    expect(url).toMatch(/too many changes/i);
+    expect(
+      await prisma.equipmentInventory.findUnique({
+        where: { equipmentTypeId_year: { equipmentTypeId: t.id, year: 2026 } },
+      }),
+    ).toBeNull();
   });
 });
 

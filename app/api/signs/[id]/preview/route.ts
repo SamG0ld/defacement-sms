@@ -4,6 +4,7 @@ import {
   streamPrivateImage,
 } from "@/lib/blob-image";
 import { validateImageUpload, MAX_IMAGE_BYTES } from "@/lib/image-upload";
+import { checkMutationRateLimit } from "@/lib/ratelimit";
 import { AuthorizationError, requireRole, requireSession } from "@/lib/rbac";
 import { prisma } from "@/lib/db";
 
@@ -13,6 +14,10 @@ import { prisma } from "@/lib/db";
 //
 // Auth: proxy.ts already gates /api/* behind a session; the rbac checks here are
 // the authoritative authorization (and defense-in-depth for the gate).
+//
+// The two mutating verbs also take the per-actor mutation budget every other
+// mutating surface takes — a role gate is not a throttle, and each call costs a
+// Blob PUT/DELETE plus a connection from the max:3 pg pool (#182).
 
 const IMAGE_ERROR: Record<string, string> = {
   empty: "Image is empty.",
@@ -34,6 +39,28 @@ function parseSignId(raw: string): number | null {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
+// lead+ AND within the caller's mutation budget. Returns the response to send on
+// refusal, or null to proceed. The body stays plain text like this route's other
+// refusals (PreviewUpload surfaces res.text() verbatim); Retry-After carries the
+// window like the edge limiter's 429 in proxy.ts, so a client can back off
+// instead of hammering.
+async function refuseMutation(): Promise<Response | null> {
+  let session;
+  try {
+    session = await requireRole("lead");
+  } catch (err) {
+    if (err instanceof AuthorizationError) return authResponse(err);
+    throw err;
+  }
+  const budget = await checkMutationRateLimit(session.user.id);
+  if (budget.success) return null;
+  const retryAfter = Math.max(1, Math.ceil((budget.reset - Date.now()) / 1000));
+  return new Response("Too many requests", {
+    status: 429,
+    headers: { "Retry-After": String(retryAfter) },
+  });
+}
+
 // POST /api/signs/[id]/preview — set/replace a sign's art preview. Body is the
 // raw (already client-downscaled) image bytes; we ignore the client Content-Type
 // and sniff the real one from magic bytes.
@@ -41,12 +68,8 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
-  try {
-    await requireRole("lead");
-  } catch (err) {
-    if (err instanceof AuthorizationError) return authResponse(err);
-    throw err;
-  }
+  const refused = await refuseMutation();
+  if (refused) return refused;
 
   const { id } = await params;
   const signId = parseSignId(id);
@@ -86,10 +109,17 @@ export async function POST(
     bytes,
     result.image.contentType,
   );
-  await prisma.sign.update({
-    where: { id: signId },
-    data: { previewImagePath: pathname },
-  });
+  try {
+    await prisma.sign.update({
+      where: { id: signId },
+      data: { previewImagePath: pathname },
+    });
+  } catch (dbErr) {
+    // DB write failed after the upload — delete the just-stored blob so a failed
+    // replace can't orphan paid storage (m17 #106).
+    await deletePrivateImage(pathname);
+    throw dbErr;
+  }
   // Reclaim the replaced blob (addRandomSuffix means the new upload has a distinct
   // pathname, so the old object is now orphaned). Best-effort — never fails the write.
   if (sign.previewImagePath && sign.previewImagePath !== pathname) {
@@ -105,12 +135,8 @@ export async function DELETE(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
-  try {
-    await requireRole("lead");
-  } catch (err) {
-    if (err instanceof AuthorizationError) return authResponse(err);
-    throw err;
-  }
+  const refused = await refuseMutation();
+  if (refused) return refused;
 
   const { id } = await params;
   const signId = parseSignId(id);

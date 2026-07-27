@@ -26,6 +26,10 @@ function rowBadge(status: MappedRow["status"]): string {
       return "border-emerald-800 bg-emerald-950 text-emerald-300";
     case "duplicate":
       return "border-yellow-800 bg-yellow-950 text-yellow-300";
+    // A re-add is going to import — read it as a variant of "valid", not a
+    // warning. Distinct colour so a lead can still see WHICH rows they are.
+    case "readd":
+      return "border-sky-800 bg-sky-950 text-sky-300";
     default:
       return "border-red-900 bg-red-950 text-red-300";
   }
@@ -129,6 +133,7 @@ export function ImportWizard() {
             {result.skipped > 0 && ` Skipped ${result.skipped}.`}
             {result.failed > 0 && ` ${result.failed} failed.`}
           </p>
+          {result.error && <p className="text-amber-200">{result.error}</p>}
           <Link href="/signs" className="underline hover:text-emerald-100">
             View signs →
           </Link>
@@ -176,16 +181,32 @@ function PreviewPanel({
   }
 
   const { counts } = preview;
-  const willImport = counts.valid + (includeDuplicates ? counts.duplicate : 0);
+  // Re-adds always import (their only match is a removed tombstone), so they
+  // count toward the button total regardless of the duplicate opt-in. (#265)
+  const willImport =
+    counts.valid + counts.readd + (includeDuplicates ? counts.duplicate : 0);
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-3 text-sm">
         <Stat label="Valid" value={counts.valid} tone="text-emerald-300" />
+        {counts.readd > 0 && (
+          <Stat label="Re-adds" value={counts.readd} tone="text-sky-300" />
+        )}
         <Stat label="Duplicates" value={counts.duplicate} tone="text-yellow-300" />
         <Stat label="Invalid" value={counts.invalid} tone="text-red-300" />
         <Stat label="Total rows" value={counts.total} tone="text-zinc-300" />
       </div>
+
+      {counts.readd > 0 && (
+        <div className="rounded-md border border-sky-800/60 bg-sky-950/30 p-3 text-sm text-sky-200">
+          {counts.readd} row{counts.readd === 1 ? "" : "s"} match a sign that was
+          removed from the record. {counts.readd === 1 ? "It is" : "They are"} a
+          re-add, not a duplicate — {counts.readd === 1 ? "it imports" : "they import"}{" "}
+          as {counts.readd === 1 ? "a new sign" : "new signs"} and the removed
+          one{counts.readd === 1 ? "" : "s"} stay removed.
+        </div>
+      )}
 
       <div className="text-xs text-zinc-500">
         Mapped columns: {preview.mappedColumns.join(", ") || "none"}.
@@ -239,7 +260,15 @@ function PreviewPanel({
                 <td className="px-3 py-2 font-mono text-xs">{r.data.itemId}</td>
                 <td className="px-3 py-2">{r.data.signText}</td>
                 <td className="px-3 py-2 text-xs text-zinc-500">
-                  {r.reason && <div className="text-red-300">{r.reason}</div>}
+                  {r.reason && (
+                    <div
+                      className={
+                        r.status === "readd" ? "text-sky-300" : "text-red-300"
+                      }
+                    >
+                      {r.reason}
+                    </div>
+                  )}
                   {r.warnings.map((w, i) => (
                     <div key={i} className="text-yellow-400">
                       {w}

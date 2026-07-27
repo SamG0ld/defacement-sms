@@ -1,19 +1,22 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { getSession } from "@/lib/session";
+import { requirePageSession } from "@/lib/page-guards";
 import { prisma } from "@/lib/db";
 import { hasRole } from "@/lib/rbac";
+import { changeSummary } from "@/lib/change-history";
+import { countGroupForSign } from "@/lib/qm-stock";
 
 import { WhereItGoes } from "../../map/_components/WhereItGoes";
 import { LifecyclePanel } from "../_components/LifecyclePanel";
 
 import { DeployPhotoThumb } from "../_components/DeployPhoto";
 import { StatusForm } from "./_StatusForm";
+import { StockControl } from "./_StockControl";
 import { DetailStatusBadge } from "./_StatusBadge";
 import { PreviewImage } from "./_components/PreviewImage";
 import { PreviewUpload } from "./_components/PreviewUpload";
-import { deleteSign, setHardwareCollected } from "../actions";
+import { deleteSign, setHardwareCollected, setHardwareReturned } from "../actions";
 import {
   deploymentSlotLabel,
   formatDate,
@@ -77,10 +80,8 @@ export default async function SignDetailPage({
 
   const { error } = await searchParams;
 
-  const session = await getSession();
-  const canManage = session?.user?.role
-    ? hasRole(session.user.role, "lead")
-    : false;
+  const session = await requirePageSession();
+  const canManage = hasRole(session.user.role, "lead");
 
   const sign = await prisma.sign.findUnique({
     where: { id: signId },
@@ -96,6 +97,10 @@ export default async function SignDetailPage({
     },
   });
   if (!sign) notFound();
+
+  // QM pile counts for this sign's group (identical signs). Only piles (group size
+  // > 1) get the check-out control; a unique sign isn't a QM-pile item.
+  const qmGroup = await countGroupForSign(sign.id);
 
   return (
     <div className="space-y-6">
@@ -146,6 +151,19 @@ export default async function SignDetailPage({
         <h2 className="text-sm font-semibold text-zinc-300">Update status</h2>
         <StatusForm signId={sign.id} status={sign.status} />
       </section>
+
+      {/* QM stock check-out — only meaningful for a pile (a group of identical
+          signs, size > 1). Take/return acts on the group, not just this row. */}
+      {qmGroup && qmGroup.total > 1 && (
+        <section className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4">
+          <h2 className="text-sm font-semibold text-zinc-300">QM stock</h2>
+          <StockControl
+            signId={sign.id}
+            total={qmGroup.total}
+            taken={qmGroup.taken}
+          />
+        </section>
+      )}
 
       {/* Art preview — the generated sign image (web preview, not the print file) */}
       <section className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4">
@@ -269,6 +287,39 @@ export default async function SignDetailPage({
               </div>
             </Field>
           )}
+          {needsHardware(sign) && sign.equipmentCheckedOut && (
+            <Field label="Returned">
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`rounded border px-2 py-0.5 text-[10px] uppercase ${
+                    sign.equipmentReturned
+                      ? "border-[var(--accent)] text-accent"
+                      : "border-zinc-700 text-zinc-400"
+                  }`}
+                >
+                  {sign.equipmentReturned ? "returned" : "not returned"}
+                </span>
+                <form
+                  action={setHardwareReturned.bind(null, sign.id)}
+                  className="inline"
+                >
+                  <input
+                    type="hidden"
+                    name="returned"
+                    value={sign.equipmentReturned ? "0" : "1"}
+                  />
+                  <button
+                    type="submit"
+                    className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                  >
+                    {sign.equipmentReturned
+                      ? "mark not returned"
+                      : "mark returned"}
+                  </button>
+                </form>
+              </div>
+            </Field>
+          )}
         </Panel>
       </div>
 
@@ -297,22 +348,35 @@ export default async function SignDetailPage({
         )}
       </section>
 
-      {/* Status history timeline */}
+      {/* Change history timeline (status + format changes) */}
       <section className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-950 p-4">
-        <h2 className="text-sm font-semibold text-zinc-300">Status history</h2>
+        <h2 className="text-sm font-semibold text-zinc-300">Change history</h2>
         {sign.statusHistory.length === 0 ? (
-          <p className="text-sm text-zinc-500">No status changes yet.</p>
+          <p className="text-sm text-zinc-500">No changes yet.</p>
         ) : (
           <ol className="space-y-2">
-            {sign.statusHistory.map((h) => (
+            {sign.statusHistory.map((h) => {
+              const c = changeSummary(h);
+              return (
               <li
                 key={h.id}
                 className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 border-l-2 border-zinc-800 pl-3 text-sm"
               >
-                <span className="text-zinc-200">
-                  {h.oldStatus ? `${h.oldStatus} → ` : ""}
-                  {h.newStatus}
-                </span>
+                {c.isFormat ? (
+                  <span className="flex items-baseline gap-1.5 text-zinc-200">
+                    <span className="rounded border border-zinc-700 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">
+                      Format
+                    </span>
+                    <span>
+                      {c.from ?? "—"} → {c.to ?? "—"}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="text-zinc-200">
+                    {c.from ? `${c.from} → ` : ""}
+                    {c.to}
+                  </span>
+                )}
                 <span className="text-xs text-zinc-500">
                   {formatDateTime(h.changedAt)}
                 </span>
@@ -327,7 +391,8 @@ export default async function SignDetailPage({
                   </span>
                 )}
               </li>
-            ))}
+              );
+            })}
             {sign.statusHistory.length === 50 && (
               <li className="border-l-2 border-zinc-800 pl-3 text-xs text-zinc-500">
                 Showing the latest 50 changes — older history is retained but

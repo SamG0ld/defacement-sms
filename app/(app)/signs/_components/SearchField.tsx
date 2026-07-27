@@ -26,16 +26,26 @@ export function SearchField({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  // Seed local state from the server prop ONCE. Local `value` is the source of
-  // truth while mounted; we deliberately don't sync it back from `defaultValue`,
-  // because the only soft-nav that changes `q` is this box's own typing (where
-  // `value` is already ahead of the prop). Every OTHER way `q` or the filters
-  // change is a hard nav that remounts this island and reseeds: the "Apply
-  // filters" form submit (native GET) and the "Clear" <Link>. Pager <Link>s and
-  // our search soft-nav leave `q`/`otherParams` untouched. If a future filter is
-  // ever changed via a soft nav that DOES alter `q`/`otherParams` without a
-  // remount, revisit this (add a keyed remount or a sync effect) — see Tech Debt.
+  // Local `value` is the source of truth while typing — it runs ahead of the prop
+  // between a keystroke and the debounced round-trip, so blindly syncing from
+  // `defaultValue` would fight the cursor. But it must NOT be seeded once and left
+  // alone either: the "Clear" <Link> on the filter panel is a Next <Link>, i.e. a
+  // SOFT nav, so it drops `q` from the URL without remounting this island. The box
+  // would keep showing the cleared term and the next keystroke would debounce
+  // straight back to a URL containing it, silently undoing the Clear.
   const [value, setValue] = useState(defaultValue);
+
+  // The term the URL currently carries because WE put it there, stored the way
+  // the server hands it back (trimmed — buildSearchHref trims, and the page
+  // re-trims `q` off searchParams). Anything arriving in `defaultValue` that
+  // doesn't match this was set by something other than us (Clear, Back, a link).
+  const pushed = useRef(defaultValue);
+
+  useEffect(() => {
+    if (defaultValue === pushed.current) return;
+    pushed.current = defaultValue;
+    setValue(defaultValue);
+  }, [defaultValue]);
 
   // Skip the navigation on initial mount — only react to the user typing.
   const mounted = useRef(false);
@@ -45,7 +55,11 @@ export function SearchField({
       mounted.current = true;
       return;
     }
+    // The URL already says this — an external resync (above), not a keystroke.
+    // Navigating again would just replace the current entry with itself.
+    if (value === pushed.current) return;
     const timer = setTimeout(() => {
+      pushed.current = value.trim();
       router.replace(buildSearchHref(pathname, otherParams, value), {
         scroll: false,
       });

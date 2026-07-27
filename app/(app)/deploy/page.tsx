@@ -1,12 +1,14 @@
 import { prisma } from "@/lib/db";
-import { requireSession } from "@/lib/rbac";
+import { requirePageSession } from "@/lib/page-guards";
 import type { SignStatus } from "@/app/generated/prisma/client";
 
+import { ARCHIVED_STATUS } from "../signs/_lib";
 import { DeployApp } from "./_components/DeployApp";
 import {
   ZoneDeployOverview,
   type ZoneProgress,
 } from "./_components/ZoneDeployOverview";
+import { countUnzonedSigns } from "./_overview";
 
 // "Deployed" = the two up terminals, mirroring the dashboard/top-strip telemetry
 // (a sign is deployed by us OR installed externally).
@@ -20,7 +22,7 @@ const DEPLOYED = new Set<SignStatus>(["deployed", "installed"]);
 // stays first + full-bleed); the gauge is zone-scoped (signs without a zone
 // aren't counted — by con time every sign should be zoned).
 export default async function DeployPage() {
-  const session = await requireSession();
+  const session = await requirePageSession();
 
   const [zones, grouped] = await Promise.all([
     prisma.zone.findMany({
@@ -28,7 +30,16 @@ export default async function DeployPage() {
       select: { id: true, zoneCode: true, zoneName: true },
       orderBy: [{ deploymentPriority: "asc" }, { zoneName: "asc" }],
     }),
-    prisma.sign.groupBy({ by: ["zoneId", "status"], _count: { _all: true } }),
+    // Archived (soft-removed) signs are excluded so a removed sign can't sit in a
+    // zone's denominator forever — it lands in perZoneTotal but never in
+    // perZoneDeployed, so the zone could never read 100%. This groupBy doesn't run
+    // through buildSignWhere, so the exclusion is explicit here (same as the
+    // dashboard's telemetry groupBy in app/(app)/page.tsx).
+    prisma.sign.groupBy({
+      by: ["zoneId", "status"],
+      _count: { _all: true },
+      where: { status: { not: ARCHIVED_STATUS } },
+    }),
   ]);
 
   const perZoneTotal = new Map<number, number>();
@@ -55,6 +66,12 @@ export default async function DeployPage() {
   const deployed = zoneProgress.reduce((s, z) => s + z.deployed, 0);
   const total = zoneProgress.reduce((s, z) => s + z.total, 0);
 
+  // Signs with no zone are excluded from the gauge above (by design) — surface
+  // the count so this zone-scoped x/y visibly reconciles with the fleet-wide
+  // top-strip DEPLOY readout, which counts them. Computed off the same rows,
+  // without altering the zone-progress math.
+  const unzoned = countUnzonedSigns(grouped);
+
   return (
     <div className="space-y-4">
       {/* Desktop-only ops overview; the mobile field flow stays first/full-bleed. */}
@@ -63,6 +80,7 @@ export default async function DeployPage() {
           deployed={deployed}
           total={total}
           zones={zoneProgress}
+          unzoned={unzoned}
         />
       </div>
       <DeployApp currentUserId={session.user.id} />

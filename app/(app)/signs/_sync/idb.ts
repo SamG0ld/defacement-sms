@@ -58,6 +58,17 @@ function getDb(): Promise<IDBDatabase> {
   return dbPromise;
 }
 
+// Mirrors deploy/_lib/idb.ts — see there for the full rationale. These names mean
+// "the CONNECTION is stale", not "this data is bad". (#205)
+export function isStaleConnectionError(err: unknown): boolean {
+  const name = (err as { name?: string } | null | undefined)?.name;
+  return (
+    name === "InvalidStateError" ||
+    name === "TransactionInactiveError" ||
+    name === "AbortError"
+  );
+}
+
 function runTx<T>(
   db: IDBDatabase,
   mode: IDBTransactionMode,
@@ -73,7 +84,13 @@ function runTx<T>(
       result = req.result;
     };
     t.oncomplete = () => resolve(result);
-    t.onerror = () => reject(t.error);
+    // See deploy/_lib/idb.ts: a torn-down transaction has a null `t.error`, and an
+    // unhandled abort left this pending forever. Always reject with something
+    // classifiable. (#205)
+    const fail = () =>
+      reject(t.error ?? new DOMException("transaction aborted", "AbortError"));
+    t.onerror = fail;
+    t.onabort = fail;
   });
 }
 
@@ -81,15 +98,22 @@ function tx<T>(
   mode: IDBTransactionMode,
   run: (s: IDBObjectStore) => IDBRequest<T>,
 ): Promise<T> {
+  const retryOnce = (err: unknown): Promise<T> => {
+    if (!isStaleConnectionError(err)) throw err;
+    dbPromise = null;
+    return getDb().then((fresh) => runTx(fresh, mode, run));
+  };
   return getDb().then((db) => {
+    let running: Promise<T>;
     try {
-      return runTx(db, mode, run);
-    } catch {
-      // transaction() throws synchronously on a connection the browser already
-      // closed — re-open once and retry.
-      dbPromise = null;
-      return getDb().then((fresh) => runTx(fresh, mode, run));
+      // transaction() throws SYNCHRONOUSLY on an already-closed connection…
+      running = runTx(db, mode, run);
+    } catch (err) {
+      return retryOnce(err);
     }
+    // …and can also abort ASYNCHRONOUSLY on one the browser is tearing down.
+    // Retry both, once. (#205)
+    return running.catch(retryOnce);
   });
 }
 

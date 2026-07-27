@@ -54,6 +54,7 @@ describe("ui-coverage-sample.csv fixture", () => {
       valid: 13,
       duplicate: 1, // the second M-204 "Contest Stage"
       invalid: 2, // missing sign text + missing item id
+      readd: 0, // no archived tombstones in this fixture's context (#265)
       total: 16,
     });
   });

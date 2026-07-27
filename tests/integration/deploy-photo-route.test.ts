@@ -16,7 +16,8 @@ import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { applyDeploys, claimSigns, createCrew } from "@/lib/deploy/service";
 import type { ApiActor } from "@/lib/deploy/api-types";
-import { POST } from "@/app/api/native/deploys/[clientId]/photo/route";
+import { GET, POST } from "@/app/api/native/deploys/[clientId]/photo/route";
+import { routeParams } from "../helpers/route-params";
 
 const actorA: ApiActor = { userId: "uA", email: "a@example.com", role: "volunteer" };
 const actorB: ApiActor = { userId: "uB", email: "b@example.com", role: "volunteer" };
@@ -39,7 +40,15 @@ function photoPost(clientId: string) {
     method: "POST",
     body: new Uint8Array([1, 2, 3]),
   });
-  return POST(req, { params: Promise.resolve({ clientId }) });
+  return POST(req, { params: routeParams({ clientId }) });
+}
+
+function photoGet(clientId: string) {
+  const req = new Request(
+    `http://localhost/api/native/deploys/${clientId}/photo`,
+    { method: "GET" },
+  );
+  return GET(req, { params: routeParams({ clientId }) });
 }
 
 let seq = 0;
@@ -54,7 +63,7 @@ async function seedDeployOwnedBy(owner: ApiActor): Promise<string> {
   await claimSigns({ clientId: `claim-${seq}`, crewId: crew.id, signIds: [sign.id] }, owner);
   const clientId = `dep-ph-${seq}`;
   await applyDeploys(
-    { events: [{ clientId, signId: sign.id, crewId: crew.id, deployedAt: new Date(), hasPhoto: true }] },
+    { events: [{ clientId, signId: sign.id, crewId: crew.id, deployedAt: new Date() }] },
     owner,
   );
   return clientId;
@@ -62,6 +71,8 @@ async function seedDeployOwnedBy(owner: ApiActor): Promise<string> {
 
 beforeEach(() => {
   vi.mocked(auth).mockReset();
+  signedInAs(actorA); // default resolved value so a test can't race on an unset mock (#68)
+  seq = 0; // reset so assertions never depend on prior tests' run order (#68/#63)
 });
 afterEach(() => {
   vi.clearAllMocks();
@@ -137,5 +148,16 @@ describe("POST /api/native/deploys/[clientId]/photo — ownership gate (H1)", ()
 
     expect(res.status).not.toBe(403);
     expect(res.status).not.toBe(401);
+  });
+});
+
+describe("GET /api/native/deploys/[clientId]/photo — session-check error path (#74)", () => {
+  it("returns a generic 500 when the session check throws a non-ApiError", async () => {
+    // A non-ApiError from requireApiSession (e.g. the auth layer itself faulting)
+    // must fall through the GET catch to a generic 500 — never leak the error.
+    vi.mocked(auth).mockRejectedValue(new Error("unexpected"));
+    const res = await photoGet("any-client-id");
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "internal error" });
   });
 });

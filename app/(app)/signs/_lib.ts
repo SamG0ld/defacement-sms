@@ -27,6 +27,24 @@ export const SIGN_STATUSES = [
   "installed",
 ] as const satisfies readonly SignStatus[];
 
+// The soft-removed terminal status (DC34 per-size record engine). Kept OUT of
+// SIGN_STATUSES on purpose: it must never be a generic status-change target
+// (that would let bulkSetStatus/updateSignStatus archive a deployed sign and
+// re-open the offline-sync + physical-inventory hazards), never appear in a
+// status <select> or filter chip, and never enter stampsForStatus rank math.
+// The only way IN is the gated archiveSignsByTag action; the only way OUT is
+// restoreSigns. buildSignWhere hides it from every default view.
+export const ARCHIVED_STATUS = "archived" satisfies SignStatus;
+
+// A sign may be soft-removed ONLY before it's physically printed. A pre-print
+// sign was never in the field working set (sync-safe) and has no physical count
+// (inventory-safe), so removal is clean; printed+ signs are blocked with a
+// message and left for the lifecycle flow.
+export const ARCHIVABLE_STATUSES = [
+  "pending",
+  "generated",
+] as const satisfies readonly SignStatus[];
+
 // Item-class vocabulary for the form <select> and the list filter. Distinct classes
 // count + need hardware differently (see lib/print-summary). Order is display order.
 export const SIGN_CATEGORIES = [
@@ -82,18 +100,52 @@ export type SignFilters = {
   due?: string;
 };
 
+// Upper bound on the free-text `type` filter before it reaches Prisma. The real
+// signType values are short form-factor labels; 64 chars is generous headroom
+// while still capping an absurd/hostile query param (M17 #54).
+const MAX_TYPE_FILTER_LEN = 64;
+
 export function buildSignWhere(f: SignFilters): Prisma.SignWhereInput {
   const where: Prisma.SignWhereInput = {};
-  if (f.status && SIGN_STATUSES.includes(f.status as SignStatus)) {
+  // Archived (soft-removed) signs are hidden from EVERY default view. The list's
+  // dedicated "Removed" view opts back in with ?status=archived; any other value
+  // (or none) shows the live record only. This is THE chokepoint the list, both
+  // CSV exports, and the bulk-target resolvers all pass through, so "removed" is
+  // excluded everywhere without a per-site filter.
+  if (f.status === ARCHIVED_STATUS) {
+    where.status = ARCHIVED_STATUS;
+  } else if (
+    f.status &&
+    (SIGN_STATUSES as readonly SignStatus[]).includes(f.status as SignStatus)
+  ) {
     where.status = f.status as SignStatus;
+  } else {
+    where.status = { not: ARCHIVED_STATUS };
   }
   if (f.zone) {
     const zoneId = Number.parseInt(f.zone, 10);
     if (Number.isInteger(zoneId) && zoneId > 0) where.zoneId = zoneId;
   }
-  if (f.tag) where.tagAssignments = { some: { tag: { slug: f.tag } } };
-  if (f.slot) where.deploymentSlot = f.slot;
-  if (f.type) where.signType = f.type;
+  // tag is a slug equality (parameterized) — bound it like type so an oversized
+  // value can't reach the query; a non-matching slug yields zero rows (M17 #54).
+  if (f.tag) {
+    where.tagAssignments = {
+      some: { tag: { slug: f.tag.slice(0, MAX_TYPE_FILTER_LEN) } },
+    };
+  }
+  // slot / type reach Prisma as equality filters. It's a parameterized ORM, so
+  // there's no injection — but allowlist/bound them so only expected values ever
+  // hit the query (M17 #54). slot is a closed vocabulary (DEPLOYMENT_SLOTS); an
+  // unknown value simply drops the filter — a malformed GET param on a list page
+  // shouldn't 400, it should just not filter. (SLOT_LABEL_BY_VALUE is keyed by
+  // the same slot values, so .has() is the O(1) allowlist check.)
+  if (f.slot && SLOT_LABEL_BY_VALUE.has(f.slot)) where.deploymentSlot = f.slot;
+  // signType is intentionally free-text: the filter dropdown is built from the
+  // DISTINCT values actually in the DB, so legacy/odd types must still filter (see
+  // the SIGN_TYPES note below). A static allowlist would break that — instead just
+  // bound the length so an absurd value can't reach the query; a non-matching type
+  // yields zero rows, which is safe.
+  if (f.type) where.signType = f.type.slice(0, MAX_TYPE_FILTER_LEN);
   if (f.category && SIGN_CATEGORIES.includes(f.category as SignCategory)) {
     where.category = f.category as SignCategory;
   }
@@ -113,7 +165,9 @@ export function buildSignWhere(f: SignFilters): Prisma.SignWhereInput {
   // (no AND wrapper) so the where stays flat and predictable.
   if (f.due === "today" || f.due === "overdue") {
     const today = pacificTodayUtc();
-    where.status = { not: "deployed" };
+    // A removed sign is never "due" — exclude archived alongside deployed so the
+    // dashboard urgency shortcuts count only live, not-yet-deployed signs.
+    where.status = { notIn: ["deployed", ARCHIVED_STATUS] };
     where.deployByDate = f.due === "today" ? today : { lt: today };
   }
   return where;
@@ -144,7 +198,8 @@ export function stampsForStatus(
   changedBy: string,
   now: Date,
 ): StampPatch {
-  const rankOf = (s: SignStatus) => SIGN_STATUSES.indexOf(s);
+  const rankOf = (s: SignStatus) =>
+    (SIGN_STATUSES as readonly SignStatus[]).indexOf(s);
   const rank = rankOf(target);
   const patch: StampPatch = {};
   if (target === "delivered") {
@@ -221,6 +276,48 @@ export function shortZoneLabel(
   return zoneName ?? zoneCode ?? "—";
 }
 
+export type ZoneSelectOption = { value: string; label: string };
+
+// Options for the sign form's Zone <select>, INCLUDING the "— none —" entry.
+//
+// Load-bearing invariant: when `currentZoneId` is set, the returned list always
+// contains an option whose value matches it. An uncontrolled <select> whose
+// defaultValue matches no option falls back to the first option in DOM order —
+// "— none —" here — so a sign pointing at a zone that has since been deactivated
+// would render as unassigned and the next save (of any unrelated field) would
+// silently wipe its placement. A zone that is present but inactive is labelled so
+// the state is visible; one missing from the list entirely gets a synthetic
+// placeholder rather than being quietly dropped. That last branch is
+// belt-and-suspenders — neither caller can currently produce it (the FK nulls
+// zoneId if a zone is deleted, and the edit page merges the sign's own zone in) —
+// but it is what makes the invariant hold for ANY caller, so don't drop it.
+export function zoneSelectOptions(
+  zones: ReadonlyArray<{
+    id: number;
+    zoneCode?: string | null;
+    zoneName?: string | null;
+    building?: string | null;
+    isActive?: boolean;
+  }>,
+  currentZoneId: number | null | undefined,
+): ZoneSelectOption[] {
+  const options: ZoneSelectOption[] = [{ value: "", label: "— none —" }];
+  for (const z of zones) {
+    const label = shortZoneLabel(z);
+    options.push({
+      value: String(z.id),
+      label: z.isActive === false ? `${label} (inactive)` : label,
+    });
+  }
+  if (currentZoneId != null && !zones.some((z) => z.id === currentZoneId)) {
+    options.push({
+      value: String(currentZoneId),
+      label: `Zone #${currentZoneId} (unavailable)`,
+    });
+  }
+  return options;
+}
+
 // Rotating-sign deployment slots: con days × AM/PM. Value is stored on the
 // Sign as a plain string; label is what the UI shows.
 const SLOT_DAYS = ["TUES", "WED", "THU", "FRI", "SAT", "SUN"] as const;
@@ -283,6 +380,26 @@ export function formatDateTime(d: Date | null | undefined): string {
   return `${s} PT`;
 }
 
+// Compact variant of formatDateTime for tight rail/sidebar UI (e.g. deploy's
+// FocusPane). Takes an ISO string (not a Date) because its callers pull
+// timestamps off client-side store views that serialize dates as ISO strings,
+// and mirrors their prior null/invalid handling: missing or unparsable input
+// returns null (not "—") so callers can cheaply skip rendering the row.
+export function formatShortDateTime(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const s = new Intl.DateTimeFormat("en-US", {
+    timeZone: EVENT_TZ,
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+  return `${s} PT`;
+}
+
 export function formatDate(d: Date | null | undefined): string {
   if (!d) return "—";
   return new Intl.DateTimeFormat("en-US", {
@@ -331,6 +448,7 @@ export const STATUS_LABELS: Record<SignStatus, string> = {
   deployed: "Deployed",
   handed_off: "Handed off",
   installed: "Installed",
+  archived: "Removed",
 };
 
 export function statusLabel(status: SignStatus): string {
@@ -359,6 +477,8 @@ export function statusBadgeClass(status: SignStatus): string {
       return "badge-handed_off";
     case "installed":
       return "badge-installed";
+    case "archived":
+      return "border-zinc-800 bg-zinc-900 text-zinc-500 line-through";
     default:
       return "border-zinc-700 bg-zinc-900 text-zinc-300";
   }
@@ -380,6 +500,18 @@ export function hardwareKind(
   if (sign.needsEasel) return "easel";
   if (sign.category === "meterboard") return "meterboard stand";
   return null;
+}
+
+// Sign-type as shown in the list/cards, with double-sided surfaced inline. A 4'x8'
+// Double and a 4'x8' Single share the same signType ("Meterboard (4'x8')"), so
+// without this a Double — a materially distinct sign (two print faces, ~2× cost) —
+// reads identically to a Single in the type column. Double-sidedness belongs in the
+// label, not buried in a boolean.
+export function signTypeLabel(sign: {
+  signType: string;
+  doubleSided: boolean;
+}): string {
+  return sign.doubleSided ? `${sign.signType} · 2-sided` : sign.signType;
 }
 
 // Build the href for a live-search navigation: carry the other active filters

@@ -6,11 +6,16 @@ import { prisma } from "@/lib/db";
 import { requireRole } from "@/lib/rbac";
 import { checkActionRateLimit } from "@/lib/ratelimit";
 import { recordAudit } from "@/lib/audit";
+import { logError } from "@/lib/log";
 import { parseCsv } from "@/lib/csv";
 import { Prisma } from "@/app/generated/prisma/client";
 
+import { ARCHIVED_STATUS } from "../_lib";
+
 import {
   buildPreview,
+  sheetIdentityKey,
+  signDedupKey,
   tooManyRows,
   type ImportPreview,
   type MappingContext,
@@ -48,7 +53,7 @@ function errorPreview(message: string): ImportPreview {
     mappedColumns: [],
     ignoredHeaders: [],
     rows: [],
-    counts: { valid: 0, invalid: 0, duplicate: 0, total: 0 },
+    counts: { valid: 0, invalid: 0, duplicate: 0, readd: 0, total: 0 },
   };
 }
 
@@ -57,16 +62,53 @@ async function loadContext(): Promise<MappingContext> {
     prisma.zone.findMany({ select: { id: true, zoneCode: true } }),
     prisma.signTag.findMany({ select: { slug: true } }),
     prisma.sign.findMany({
-      select: { itemId: true, signText: true, size: true },
+      // status is what separates a live duplicate from a removed tombstone (#265).
+      // This read stays unfiltered on purpose — archived rows are needed, just in
+      // a different bucket; filtering them out here would flip the bug the other
+      // way and label a re-add "valid" even when a live twin exists.
+      // sheetName/category/isTestData carry the DB's own uniqueness identity,
+      // which a re-add is checked against because it imports unattended.
+      select: {
+        itemId: true,
+        signText: true,
+        size: true,
+        status: true,
+        sheetName: true,
+        category: true,
+        isTestData: true,
+      },
     }),
   ]);
+  // Shared key builders (signDedupKey normalizes the room code) so these match
+  // categorizeRows.
+  const existingKeys = new Set<string>();
+  const archivedOnly = new Set<string>();
+  const liveSheetIdentities = new Set<string>();
+  for (const s of existing) {
+    const key = signDedupKey(s.itemId, s.signText, s.size);
+    if (s.status === ARCHIVED_STATUS) {
+      archivedOnly.add(key);
+      continue;
+    }
+    existingKeys.add(key);
+    // Mirror the partial unique index's predicate exactly: real rows only, and
+    // only where sheetName is set. Anything else can't collide.
+    if (!s.isTestData && s.sheetName !== null) {
+      liveSheetIdentities.add(
+        sheetIdentityKey(s.itemId, s.sheetName, s.category),
+      );
+    }
+  }
+  // A key held by BOTH a tombstone and a live row is live — the live row is what
+  // a re-import would actually collide with, so it stays a duplicate.
+  for (const key of existingKeys) archivedOnly.delete(key);
+
   return {
     zoneByCode: new Map(zones.map((z) => [z.zoneCode.toUpperCase(), z.id])),
     tagSlugs: new Set(tags.map((t) => t.slug)),
-    // Key must match categorizeRows: itemId + signText + size.
-    existingKeys: new Set(
-      existing.map((s) => `${s.itemId} ${s.signText} ${s.size}`),
-    ),
+    existingKeys,
+    archivedKeys: archivedOnly,
+    liveSheetIdentities,
   };
 }
 
@@ -99,6 +141,9 @@ export type ImportResult = {
   imported: number;
   failed: number;
   skipped: number;
+  // Set when the insert failed for a reason the lead can act on, so the wizard can
+  // say why instead of only showing an opaque `failed` count.
+  error?: string;
 };
 
 export async function executeImport(
@@ -124,8 +169,15 @@ export async function executeImport(
   // could re-classify a row -- acceptable for this low-concurrency internal tool.
   const preview = runPreview(source, rows, ctx);
 
+  // `readd` imports unconditionally: its only match is a soft-removed tombstone,
+  // which the DB deliberately allows to coexist with a live row (#263), so
+  // gating it behind the likely-duplicate opt-in is what let a re-add silently
+  // not happen (#265). A genuine live collision still needs the opt-in.
   const toInsert = preview.rows.filter(
-    (r) => r.status === "valid" || (includeDuplicates && r.status === "duplicate"),
+    (r) =>
+      r.status === "valid" ||
+      r.status === "readd" ||
+      (includeDuplicates && r.status === "duplicate"),
   );
   const skipped = preview.rows.length - toInsert.length;
 
@@ -137,6 +189,7 @@ export async function executeImport(
   const importedBy = session.user.email ?? session.user.id;
   let imported = 0;
   let failed = 0;
+  let error: string | undefined;
 
   if (toInsert.length > 0) {
     // Bulk insert in one statement instead of a per-row create loop (which was N
@@ -183,8 +236,22 @@ export async function executeImport(
         return created.length;
       });
     } catch (err) {
-      console.error("bulk import failed", err);
+      logError("signs.import", err);
       failed = toInsert.length;
+      // A master import can now collide with the master-sheet identity index added
+      // in migration 20260724120000 — most plausibly the "also import the likely
+      // duplicates" checkbox, or a re-import of a space whose sign text has since
+      // been edited (this path dedupes on room + text + size, which those change).
+      // The insert is one transaction, so it's all-or-nothing; say so plainly
+      // rather than leaving the lead with a bare "N failed".
+      if ((err as { code?: string })?.code === "P2002") {
+        error =
+          "Nothing was imported: at least one row is a sign that already exists " +
+          "for the same room, sheet name and item type. If its printed text or " +
+          "size changed, use Reconcile instead of re-importing — it updates the " +
+          "text in place and keeps the sign's status, QM and deploy history. " +
+          "Otherwise re-run without “also import likely duplicates”.";
+      }
     }
   }
 
@@ -196,8 +263,10 @@ export async function executeImport(
     actorEmail: session.user.email,
     detail: `Imported ${imported} signs (${source}, ${
       asTestData ? "test" : "real"
-    })${failed > 0 ? `, ${failed} failed` : ""}`,
+    })${failed > 0 ? `, ${failed} failed` : ""}${
+      error ? " — duplicate sheet identity" : ""
+    }`,
   });
 
-  return { imported, failed, skipped };
+  return { imported, failed, skipped, error };
 }

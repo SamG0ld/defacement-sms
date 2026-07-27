@@ -8,8 +8,9 @@ import {
   type AssetItem,
 } from "@/lib/equipment";
 import { computePrintSummary } from "@/lib/print-summary";
+import { listQmGroups } from "@/lib/qm-stock";
 import { hasRole } from "@/lib/rbac";
-import { getSession } from "@/lib/session";
+import { requirePageSession } from "@/lib/page-guards";
 
 import { addEquipmentType, recordSignMaterialHistory } from "./actions";
 import { AssetSection } from "./_components/AssetSection";
@@ -19,6 +20,7 @@ import {
 } from "./_components/ConsumablesSection";
 import { type InvCounts } from "./_components/CountEditor";
 import { PrintSummarySection } from "./_components/PrintSummarySection";
+import { QmStockSection } from "./_components/QmStockSection";
 import { YearOverYear } from "./_components/YearOverYear";
 
 type SearchParams = Promise<{ year?: string; error?: string; edit?: string }>;
@@ -48,10 +50,8 @@ export default async function InventoryPage({
 }: {
   searchParams: SearchParams;
 }) {
-  const session = await getSession();
-  const canManage = session?.user?.role
-    ? hasRole(session.user.role, "lead")
-    : false;
+  const session = await requirePageSession();
+  const canManage = hasRole(session.user.role, "lead");
 
   const sp = await searchParams;
   const error = typeof sp.error === "string" ? sp.error : "";
@@ -61,7 +61,7 @@ export default async function InventoryPage({
     Number.parseInt(typeof sp.year === "string" ? sp.year : "", 10) || CON_YEAR;
   const edit = sp.edit === "1" && canManage;
 
-  const [types, history, sizeGroups] = await Promise.all([
+  const [types, history, sizeGroups, qmGroups] = await Promise.all([
     prisma.equipmentType.findMany({
       orderBy: [{ category: "asc" }, { name: "asc" }],
       include: { inventory: { where: { year } } },
@@ -71,10 +71,17 @@ export default async function InventoryPage({
       include: { equipmentType: { select: { name: true, category: true } } },
     }),
     // Aggregate in the DB so the print summary stays cheap as signs grow.
+    // Exclude archived (soft-removed) signs — a removed sign must not count
+    // toward what to print or how much hardware to order (buildSignWhere isn't
+    // reachable from a raw groupBy-by shape, so the exclusion is explicit).
     prisma.sign.groupBy({
       by: ["category", "size", "doubleSided", "needsEasel", "printable"],
+      where: { status: { not: "archived" } },
       _sum: { quantity: true },
     }),
+    // QM pile rollup: each group of identical signs (size > 1) with Total / Out /
+    // Remaining. Take/return N is available here and on each sign's detail page.
+    listQmGroups(),
   ]);
 
   // Derived "print summary" — sheet 6's auto-counts, recomputed from the signs.
@@ -236,6 +243,8 @@ export default async function InventoryPage({
       )}
 
       <PrintSummarySection summary={summary} />
+
+      <QmStockSection rows={qmGroups} />
 
       <AssetSection
         reconciliation={reconciliation}

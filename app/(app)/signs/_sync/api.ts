@@ -6,6 +6,8 @@
 //   - ApiHttpError  → the server answered non-2xx. `status` decides permanent
 //     (4xx → dead-letter) vs transient (429/5xx/401 → retry).
 
+import { isPermanentStatus } from "@/lib/offline/http-classification";
+
 import type {
   SetSignStatusBatchInput,
   SetSignStatusBatchResponse,
@@ -25,12 +27,7 @@ export class ApiHttpError extends Error {
   // replay → dead-letter. 429/5xx are worth retrying. 401 is auth-expiry: the
   // queued change CAN succeed once the user signs back in, so not permanent.
   get permanent(): boolean {
-    return (
-      this.status >= 400 &&
-      this.status < 500 &&
-      this.status !== 429 &&
-      this.status !== 401
-    );
+    return isPermanentStatus(this.status);
   }
 }
 

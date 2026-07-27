@@ -10,7 +10,16 @@ import { buildFloorResolver, type FloorMapMeta, type FloorResolver } from "@/lib
 // Image bytes are NOT loaded here (only the route handler fetches them).
 
 // The shape the map components consume. `src` points at the cached image route.
-export type FloorMapView = { id: number; key: string; src: string; label: string };
+// width/height are the stored image pixels (advisory) — used to derive how far
+// the zoom UI may scale in (lib/map-gesture deriveMaxScale).
+export type FloorMapView = {
+  id: number;
+  key: string;
+  src: string;
+  label: string;
+  width: number | null;
+  height: number | null;
+};
 
 // The cached, auth-gated route that serves a floor map's image bytes.
 export function floorImageSrc(key: string): string {
@@ -21,16 +30,32 @@ export function floorImageSrc(key: string): string {
 // components, and the resolver all share a single round-trip. Ordered by
 // sortOrder so the first map for a zone is its default floor.
 const loadEnabledFloorMaps = cache(
-  async (): Promise<(FloorMapMeta & { id: number; label: string })[]> => {
+  async (): Promise<
+    (FloorMapMeta & {
+      id: number;
+      label: string;
+      width: number | null;
+      height: number | null;
+    })[]
+  > => {
     const rows = await prisma.floorMap.findMany({
       where: { enabled: true },
-      select: { id: true, key: true, label: true, zone: { select: { zoneCode: true } } },
+      select: {
+        id: true,
+        key: true,
+        label: true,
+        width: true,
+        height: true,
+        zone: { select: { zoneCode: true } },
+      },
       orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
     });
     return rows.map((r) => ({
       id: r.id,
       key: r.key,
       label: r.label,
+      width: r.width,
+      height: r.height,
       zoneCode: r.zone?.zoneCode ?? null,
     }));
   },
@@ -39,7 +64,14 @@ const loadEnabledFloorMaps = cache(
 // All enabled floor maps, view-shaped (for tabs, selectors, the overview).
 export async function getEnabledFloorMaps(): Promise<FloorMapView[]> {
   const maps = await loadEnabledFloorMaps();
-  return maps.map((m) => ({ id: m.id, key: m.key, src: floorImageSrc(m.key), label: m.label }));
+  return maps.map((m) => ({
+    id: m.id,
+    key: m.key,
+    src: floorImageSrc(m.key),
+    label: m.label,
+    width: m.width,
+    height: m.height,
+  }));
 }
 
 // The FloorMap id for a key (for attaching rooms to a map). Enabled maps only.
@@ -87,24 +119,42 @@ type FloorMapAdminRow = {
   zoneCode: string | null;
   width: number | null;
   height: number | null;
+  // Signs whose own override pins this floor key (Sign.mapFloor). These become
+  // "unplaced" if the map is deleted — surfaced so the delete confirm can warn.
+  pinnedSignCount: number;
 };
 
 // All floor maps for the admin manager, ordered for display. Not cached/filtered
 // to enabled — the manager needs the full set including disabled.
 export async function getAllFloorMaps(): Promise<FloorMapAdminRow[]> {
-  const rows = await prisma.floorMap.findMany({
-    select: {
-      id: true,
-      key: true,
-      label: true,
-      enabled: true,
-      sortOrder: true,
-      width: true,
-      height: true,
-      zone: { select: { zoneCode: true } },
-    },
-    orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
-  });
+  const [rows, pinCounts] = await Promise.all([
+    prisma.floorMap.findMany({
+      select: {
+        id: true,
+        key: true,
+        label: true,
+        enabled: true,
+        sortOrder: true,
+        width: true,
+        height: true,
+        zone: { select: { zoneCode: true } },
+      },
+      orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+    }),
+    // One grouped count of override-pinned signs per floor key — cheaper than a
+    // per-map query, and only override pins (mapFloor) are cleared by a delete.
+    // Exclude archived/removed signs so the "will become unplaced" warning
+    // reflects LIVE pins only (matches how active counts are computed elsewhere —
+    // ARCHIVED_STATUS in app/(app)/signs/_lib.ts).
+    prisma.sign.groupBy({
+      by: ["mapFloor"],
+      where: { mapFloor: { not: null }, status: { not: "archived" } },
+      _count: { _all: true },
+    }),
+  ]);
+  const pinsByKey = new Map(
+    pinCounts.map((p) => [p.mapFloor, p._count._all] as const),
+  );
   return rows.map((r) => ({
     id: r.id,
     key: r.key,
@@ -115,5 +165,6 @@ export async function getAllFloorMaps(): Promise<FloorMapAdminRow[]> {
     zoneCode: r.zone?.zoneCode ?? null,
     width: r.width,
     height: r.height,
+    pinnedSignCount: pinsByKey.get(r.key) ?? 0,
   }));
 }

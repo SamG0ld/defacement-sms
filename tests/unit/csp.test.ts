@@ -1,11 +1,13 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 
 import {
   buildCsp,
   cspResponseHeaderName,
   generateNonce,
   resolveCspMode,
+  __resetCspModeWarning,
 } from "@/lib/csp";
+import { __resetSentryDsnWarning } from "@/lib/sentry-dsn";
 
 // Pull the script-src / style-src directive out of a CSP string for assertions.
 function directive(csp: string, name: string): string | undefined {
@@ -63,11 +65,80 @@ describe("buildCsp", () => {
   });
 });
 
+describe("buildCsp connect-src (Sentry)", () => {
+  const origDsn = process.env.SENTRY_DSN;
+  const origPublic = process.env.NEXT_PUBLIC_SENTRY_DSN;
+  afterEach(() => {
+    if (origDsn === undefined) delete process.env.SENTRY_DSN;
+    else process.env.SENTRY_DSN = origDsn;
+    if (origPublic === undefined) delete process.env.NEXT_PUBLIC_SENTRY_DSN;
+    else process.env.NEXT_PUBLIC_SENTRY_DSN = origPublic;
+    __resetSentryDsnWarning();
+    vi.restoreAllMocks();
+  });
+
+  it("allows only 'self' + Google when Sentry is unconfigured", () => {
+    delete process.env.SENTRY_DSN;
+    delete process.env.NEXT_PUBLIC_SENTRY_DSN;
+    expect(directive(buildCsp(generateNonce()), "connect-src")).toBe(
+      "connect-src 'self' https://accounts.google.com",
+    );
+  });
+
+  it("adds exactly the DSN's ingest origin when configured", () => {
+    delete process.env.NEXT_PUBLIC_SENTRY_DSN;
+    process.env.SENTRY_DSN = "https://abc123@o456.ingest.us.sentry.io/789";
+    const connect = directive(buildCsp(generateNonce()), "connect-src");
+    expect(connect).toBe(
+      "connect-src 'self' https://accounts.google.com https://o456.ingest.us.sentry.io",
+    );
+    expect(connect).not.toContain("abc123");
+  });
+
+  // #271/#272 root cause, measured on prod 2026-07-25: the stored
+  // NEXT_PUBLIC_SENTRY_DSN carried a leading U+FEFF BOM. `new URL()` throws on
+  // that, the old bare `catch` swallowed the throw, and the ingest origin
+  // silently vanished from connect-src — which is the observation both issues
+  // read as "the edge runtime cannot see the DSN".
+  it("tolerates a BOM-prefixed DSN (the prod failure)", () => {
+    delete process.env.SENTRY_DSN;
+    process.env.NEXT_PUBLIC_SENTRY_DSN =
+      "﻿https://abc123@o456.ingest.us.sentry.io/789";
+    expect(directive(buildCsp(generateNonce()), "connect-src")).toBe(
+      "connect-src 'self' https://accounts.google.com https://o456.ingest.us.sentry.io",
+    );
+  });
+
+  // Only NEXT_PUBLIC_SENTRY_DSN is build-inlined into the middleware bundle, so
+  // this fallback is what the edge runtime actually relies on.
+  it("falls back to NEXT_PUBLIC_SENTRY_DSN when SENTRY_DSN is empty", () => {
+    process.env.SENTRY_DSN = "";
+    process.env.NEXT_PUBLIC_SENTRY_DSN =
+      "https://abc123@o456.ingest.us.sentry.io/789";
+    expect(directive(buildCsp(generateNonce()), "connect-src")).toContain(
+      "https://o456.ingest.us.sentry.io",
+    );
+  });
+
+  it("omits the origin and warns (not silently) on a malformed DSN", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.SENTRY_DSN = "not-a-dsn";
+    delete process.env.NEXT_PUBLIC_SENTRY_DSN;
+    expect(directive(buildCsp(generateNonce()), "connect-src")).toBe(
+      "connect-src 'self' https://accounts.google.com",
+    );
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
 describe("resolveCspMode / cspResponseHeaderName", () => {
   const original = process.env.CSP_MODE;
   afterEach(() => {
     if (original === undefined) delete process.env.CSP_MODE;
     else process.env.CSP_MODE = original;
+    __resetCspModeWarning();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it("maps each mode to the correct response header name", () => {
@@ -92,7 +163,84 @@ describe("resolveCspMode / cspResponseHeaderName", () => {
   });
 
   it("an unrecognized CSP_MODE falls back to report", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     process.env.CSP_MODE = "bogus";
     expect(resolveCspMode()).toBe("report");
+  });
+});
+
+// #247: the fallback direction is the LESS safe one (anything but the exact
+// string "enforce" → report-only), so a stray value must be loud, and an EMPTY
+// value must not count as a value at all.
+describe("resolveCspMode — unset vs empty vs unrecognized (#247)", () => {
+  const original = process.env.CSP_MODE;
+  afterEach(() => {
+    if (original === undefined) delete process.env.CSP_MODE;
+    else process.env.CSP_MODE = original;
+    __resetCspModeWarning();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  // .env.example ships `CSP_MODE=""`. `??` only falls back on null/undefined, so
+  // before the fix that empty string resolved to report-only IN PRODUCTION —
+  // the documented example value silently disabling enforcement.
+  it("treats an empty CSP_MODE as unset (production still enforces)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.CSP_MODE = "";
+    expect(resolveCspMode()).toBe("enforce");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("treats a whitespace-only CSP_MODE as unset", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.CSP_MODE = "   ";
+    expect(resolveCspMode()).toBe("enforce");
+  });
+
+  it("still defaults to report outside production when unset", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    delete process.env.CSP_MODE;
+    expect(resolveCspMode()).toBe("report");
+  });
+
+  it("accepts surrounding whitespace around a real mode", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.CSP_MODE = "  enforce  ";
+    expect(resolveCspMode()).toBe("enforce");
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("warns with a filterable scope when CSP_MODE is unrecognized", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.CSP_MODE = "enforced"; // the realistic typo
+    expect(resolveCspMode()).toBe("report");
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = JSON.parse(String(warn.mock.calls[0][0]));
+    expect(line).toMatchObject({ level: "warn", scope: "csp.mode-unrecognized" });
+    expect(line.message).toContain("enforced");
+  });
+
+  it("is case-sensitive — 'Enforce' is unrecognized, not a silent pass", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.CSP_MODE = "Enforce";
+    expect(resolveCspMode()).toBe("report");
+  });
+
+  it("warns ONCE, not on every request (proxy.ts resolves per module load)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.CSP_MODE = "true";
+    resolveCspMode();
+    resolveCspMode();
+    resolveCspMode();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("never leaks the bad value into the resolved mode", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    process.env.CSP_MODE = "report-only";
+    expect(["enforce", "report"]).toContain(resolveCspMode());
   });
 });

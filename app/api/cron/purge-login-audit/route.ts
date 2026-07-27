@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db";
+import { logError } from "@/lib/log";
 
 // Prisma needs the Node runtime (not edge).
 export const runtime = "nodejs";
@@ -35,9 +36,23 @@ export async function GET(req: Request) {
   }
 
   const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
-  const { count } = await prisma.auditLog.deleteMany({
-    where: { action: { in: LOGIN_ACTIONS }, createdAt: { lt: cutoff } },
-  });
-
-  return NextResponse.json({ purged: count, cutoff: cutoff.toISOString() });
+  try {
+    const { count } = await prisma.auditLog.deleteMany({
+      where: { action: { in: LOGIN_ACTIONS }, createdAt: { lt: cutoff } },
+    });
+    // A successful run is itself a signal — emit the purged count so a job that
+    // silently stops running (or starts deleting nothing) is visible in the logs.
+    console.log(
+      JSON.stringify({
+        level: "info",
+        scope: "cron.purge-login-audit",
+        purged: count,
+      }),
+    );
+    return NextResponse.json({ purged: count, cutoff: cutoff.toISOString() });
+  } catch (err) {
+    // A failed purge was previously fully silent (no try/catch, no log).
+    logError("cron.purge-login-audit", err, { cutoff: cutoff.toISOString() });
+    return NextResponse.json({ error: "purge failed" }, { status: 500 });
+  }
 }

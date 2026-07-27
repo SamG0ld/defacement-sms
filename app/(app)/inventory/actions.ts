@@ -6,15 +6,36 @@ import { z } from "zod";
 
 import { recordAudit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
+import { logError } from "@/lib/log";
 import {
+  canonicalCategory,
+  CATEGORY_OPTIONS,
   signMaterialCountsFromSummary,
   SIGN_MATERIAL_TYPE_NAMES,
 } from "@/lib/equipment";
 import { computePrintSummary } from "@/lib/print-summary";
+import { checkMutationRateLimit } from "@/lib/ratelimit";
 import { requireRole } from "@/lib/rbac";
 
+// `year` is a bound action argument, so its `number` type is a compile-time
+// fiction — a direct caller can send anything, and several failure paths run
+// before the range check. Encode it like the message rather than splicing raw
+// caller input into the redirect target.
 function fail(year: number, message: string): never {
-  redirect(`/inventory?year=${year}&error=${encodeURIComponent(message)}`);
+  redirect(
+    `/inventory?year=${encodeURIComponent(String(year))}&error=${encodeURIComponent(message)}`,
+  );
+}
+
+// Per-actor backstop, same 60/min bucket the sign + user actions use. These are
+// lead-gated but a role gate is not a throttle: upsertInventory and the
+// add/update/delete trio are all directly callable, and recordSignMaterialHistory
+// fans out into a groupBy + a multi-row transaction (#194).
+async function requireBudget(userId: string, year: number): Promise<void> {
+  const budget = await checkMutationRateLimit(userId);
+  if (!budget.success) {
+    fail(year, "Too many changes at once — wait a minute and try again.");
+  }
 }
 
 // Bound args reach these actions from a publicly-callable endpoint, so don't
@@ -23,9 +44,9 @@ function requireValidId(typeId: number, year: number): void {
   if (!Number.isInteger(typeId) || typeId <= 0) fail(year, "Invalid item.");
 }
 
-// name + category share the same shape across add/edit. Category is free text
-// (the form offers a <select>, but the DB stores a label; lib/equipment.ts
-// classifyKind maps it to a section). Empty category -> null -> consumable.
+// name + category share the same shape across add/edit. The DB column is free
+// text (lib/equipment.ts classifyKind maps a label to a section), but the write
+// path is allowlisted — see resolveCategory. Empty category -> null -> consumable.
 const itemSchema = z.object({
   name: z.string().trim().min(1).max(100),
   category: z.string().trim().max(100).nullable(),
@@ -40,6 +61,32 @@ function readItem(formData: FormData) {
   });
 }
 
+// Lists the pickable options only — "Sign Material" is also accepted (it's a
+// valid stored value) but is seeded, never offered, so naming it here would
+// point a lead at something the <select> doesn't have.
+const CATEGORY_HINT = `Pick a category from the list (${CATEGORY_OPTIONS.join(", ")}).`;
+
+// The category to store, allowlisted against KNOWN_CATEGORIES. The <select> in
+// the page constrains this client-side, but the action is directly callable and
+// nothing downstream re-checks: a stray "easel"/"Easels" would classify as an
+// asset yet reconcile into its own bucket, silently understating what to order
+// (#229). Casing is canonicalized rather than rejected.
+//
+// `current` grandfathers an edit that leaves a pre-existing custom category
+// (e.g. a legacy "Supplies" row) untouched, so tightening this can't strand a
+// row the picker still re-offers (EquipmentManageRow).
+function resolveCategory(
+  raw: string | null,
+  year: number,
+  current?: string | null,
+): string | null {
+  if (raw === null) return null;
+  const canonical = canonicalCategory(raw);
+  if (canonical) return canonical;
+  if (current !== undefined && raw === current) return raw;
+  fail(year, CATEGORY_HINT);
+}
+
 export async function addEquipmentType(formData: FormData): Promise<void> {
   const session = await requireRole("lead");
 
@@ -47,12 +94,15 @@ export async function addEquipmentType(formData: FormData): Promise<void> {
     Number.parseInt(String(formData.get("year") ?? ""), 10) ||
     new Date().getFullYear();
 
+  await requireBudget(session.user.id, year);
+
   const parsed = readItem(formData);
   if (!parsed.success) fail(year, "Enter a name (category optional).");
+  const category = resolveCategory(parsed.data.category, year);
 
   try {
     await prisma.equipmentType.create({
-      data: { name: parsed.data.name, category: parsed.data.category },
+      data: { name: parsed.data.name, category },
     });
   } catch (err) {
     if ((err as { code?: string })?.code === "P2002") {
@@ -65,7 +115,7 @@ export async function addEquipmentType(formData: FormData): Promise<void> {
     action: "equipment.add",
     actorId: session.user.id,
     actorEmail: session.user.email,
-    detail: `Added "${parsed.data.name}"${parsed.data.category ? ` (${parsed.data.category})` : ""}`,
+    detail: `Added "${parsed.data.name}"${category ? ` (${category})` : ""}`,
   });
 
   revalidatePath("/inventory");
@@ -77,21 +127,31 @@ export async function updateEquipmentType(
   formData: FormData,
 ): Promise<void> {
   const session = await requireRole("lead");
+  await requireBudget(session.user.id, year);
   requireValidId(typeId, year);
 
   const parsed = readItem(formData);
   if (!parsed.success) fail(year, "Enter a name (category optional).");
 
+  // Read the stored category first so an edit that leaves a legacy custom value
+  // alone still goes through (see resolveCategory).
+  const existing = await prisma.equipmentType.findUnique({
+    where: { id: typeId },
+    select: { category: true },
+  });
+  if (!existing) fail(year, "Item not found.");
+  const category = resolveCategory(parsed.data.category, year, existing.category);
+
   try {
     await prisma.equipmentType.update({
       where: { id: typeId },
-      data: { name: parsed.data.name, category: parsed.data.category },
+      data: { name: parsed.data.name, category },
     });
   } catch (err) {
     if ((err as { code?: string })?.code === "P2002") {
       fail(year, `"${parsed.data.name}" already exists.`);
     }
-    console.error("updateEquipmentType failed", err);
+    logError("inventory.update-type", err);
     fail(year, "Could not update the item. Try again.");
   }
 
@@ -99,7 +159,7 @@ export async function updateEquipmentType(
     action: "equipment.update",
     actorId: session.user.id,
     actorEmail: session.user.email,
-    detail: `Renamed/recategorized item #${typeId} to "${parsed.data.name}"${parsed.data.category ? ` (${parsed.data.category})` : ""}`,
+    detail: `Renamed/recategorized item #${typeId} to "${parsed.data.name}"${category ? ` (${category})` : ""}`,
   });
 
   revalidatePath("/inventory");
@@ -113,6 +173,7 @@ export async function deleteEquipmentType(
   year: number,
 ): Promise<void> {
   const session = await requireRole("lead");
+  await requireBudget(session.user.id, year);
   requireValidId(typeId, year);
 
   // History guard: deleting an EquipmentType cascades its EquipmentInventory
@@ -135,7 +196,7 @@ export async function deleteEquipmentType(
   try {
     await prisma.equipmentType.delete({ where: { id: typeId } });
   } catch (err) {
-    console.error("deleteEquipmentType failed", err);
+    logError("inventory.delete-type", err);
     fail(year, "Could not delete the item. Try again.");
   }
 
@@ -154,7 +215,8 @@ export async function upsertInventory(
   year: number,
   formData: FormData,
 ): Promise<void> {
-  await requireRole("lead");
+  const session = await requireRole("lead");
+  await requireBudget(session.user.id, year);
   requireValidId(typeId, year);
 
   // The action is callable directly, so don't trust the bound year — keep it in
@@ -200,7 +262,7 @@ export async function upsertInventory(
       update: data,
     });
   } catch (err) {
-    console.error("upsertInventory failed", err);
+    logError("inventory.upsert", err);
     fail(year, "Could not save inventory. Try again.");
   }
 
@@ -217,6 +279,7 @@ export async function upsertInventory(
 // replaced by the next con's data. Bound with the year for a <form action>.
 export async function recordSignMaterialHistory(year: number): Promise<void> {
   const session = await requireRole("lead");
+  await requireBudget(session.user.id, year);
   const current = new Date().getFullYear();
   if (!Number.isInteger(year) || year < 2015 || year > current + 2) {
     fail(current, "Invalid year.");
@@ -261,7 +324,7 @@ export async function recordSignMaterialHistory(year: number): Promise<void> {
       ),
     );
   } catch (err) {
-    console.error("recordSignMaterialHistory failed", err);
+    logError("inventory.material-history", err);
     fail(year, "Could not record sign totals. Try again.");
   }
 

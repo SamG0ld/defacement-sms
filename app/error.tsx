@@ -2,6 +2,8 @@
 
 import { useEffect } from "react";
 
+import * as Sentry from "@sentry/nextjs";
+
 // Route-segment error boundary for the whole app tree (everything below the root
 // layout, including /login and the authed area). Without it, a thrown server
 // error renders Next's raw default screen. Matches the login aesthetic.
@@ -13,8 +15,10 @@ export default function ErrorBoundary({
   reset: () => void;
 }) {
   useEffect(() => {
-    // Surfaced to the browser console; Next captures the full stack server-side
-    // and ties it to this digest.
+    // Report to Sentry (no-op without a DSN) + surface to the browser console.
+    // Tag the event with `digest` so the user-facing "Reference:" code ties back
+    // to Next's server-side log for the same error (correlation — see #89).
+    Sentry.captureException(error, { tags: { digest: error.digest } });
     console.error(error);
   }, [error]);
 

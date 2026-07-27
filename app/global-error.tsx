@@ -2,6 +2,8 @@
 
 import { useEffect } from "react";
 
+import * as Sentry from "@sentry/nextjs";
+
 // global-error replaces the ROOT layout when the error is thrown in the layout
 // itself, so it must render its own <html>/<body>. The failed root layout's
 // fonts/theme tokens aren't guaranteed here, so colors use plain Tailwind utility
@@ -14,6 +16,10 @@ export default function GlobalError({
   reset: () => void;
 }) {
   useEffect(() => {
+    // Report to Sentry (no-op without a DSN); a layout-level crash lands here.
+    // Tag with `digest` so the user-facing reference code correlates to the
+    // server-side log for this error (see #89).
+    Sentry.captureException(error, { tags: { digest: error.digest } });
     console.error(error);
   }, [error]);
 

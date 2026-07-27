@@ -1,0 +1,62 @@
+-- M18 reconcile (#228): a DB-level guard so a repeat/concurrent reconcile apply can
+-- never double-create the same master-sheet space. Before this, applyReconcile
+-- decided "this identity is an add" purely from the in-memory diff, so two leads
+-- applying near-simultaneously (or one apply beating the rate-limit window) could
+-- both pass the check and both insert — producing exactly the phantom room+name
+-- duplicates lib/sign-audit.ts exists to detect after the fact.
+--
+-- PARTIAL, deliberately:
+--   * is_test_data = false   — fixtures are throwaway and duplicate freely.
+--   * sheet_name IS NOT NULL — non-sheet signs (all-venue standing signs, hand-added
+--     wayfinding) legitimately repeat. In particular the all-venue QM stock piles are
+--     N rows per pile with NULL sheet_name (prisma/seeds/all-venue-signs.sql), and
+--     the QM group key (lib/qm-stock.ts) does not include item_id or sheet_name at
+--     all. Postgres already treats NULLs as distinct in a unique index, so this
+--     predicate is belt-and-braces — it also keeps the index small and the intent
+--     legible.
+--
+-- `category` (not a derived is_sock flag) is the third column because it is what
+-- separates a master primary from its sock: the parser emits them sharing item_id
+-- AND sheet_name, differing only by category (signs/import/_parsers/master.ts).
+--
+-- NOTE: this is narrower than the reconcile identity, which normalizes the room code
+-- (lib/reconcile.ts identityOf → normalizeRoomCode). Variant room spellings of one
+-- booth ("W204, W205" vs "W204-W205") are still distinct rows here. That is by
+-- design: a partial index cannot call the app's normalizer, and the exact-repeat case
+-- is the one the double-apply race produces.
+--
+-- Named to match Prisma's default for the matching @@unique([itemId, sheetName,
+-- category]) in schema.prisma, so the schema and the DB stay aligned and `migrate
+-- dev` does not see drift (Prisma cannot express a partial index itself).
+--
+-- Applying it: NOT `CONCURRENTLY`, deliberately. A plain CREATE UNIQUE INDEX is
+-- atomic — if it fails on duplicate data (a real possibility here, see below) it
+-- leaves nothing behind and the retry is just "run it again". CONCURRENTLY cannot run
+-- inside a transaction block and, on failure, leaves an INVALID index of this name
+-- behind, which the `IF NOT EXISTS` below would then silently skip — leaving the
+-- constraint unenforced with no error. Its SHARE lock blocking writes for the build is
+-- also a feature: it closes the TOCTOU window between "duplicate pre-flight passed"
+-- and "constraint is live". At this table's size the build is brief.
+--
+-- lock_timeout bounds the WAIT for that lock (not the build). A reconcile apply can
+-- hold a transaction touching `signs` for up to 30s (APPLY_TX_OPTIONS), and a DDL
+-- statement queued behind one blocks every newer transaction behind IT — so fail fast
+-- and loud rather than backing up the whole table. Re-run when it's quiet.
+--
+-- `IF NOT EXISTS` matches on NAME only — if an index of this name already exists with
+-- a different definition (e.g. from a stray `prisma db push`), this silently accepts
+-- it. After applying, verify the definition matches the statement below:
+--   SELECT indexdef FROM pg_indexes
+--   WHERE indexname = 'signs_item_id_sheet_name_category_key';
+--
+-- If this fails on an existing database, it is reporting real duplicate data rather
+-- than a bad migration. Find the offenders with:
+--   SELECT item_id, sheet_name, category, COUNT(*), ARRAY_AGG(id)
+--   FROM signs
+--   WHERE is_test_data = false AND sheet_name IS NOT NULL
+--   GROUP BY 1,2,3 HAVING COUNT(*) > 1;
+SET LOCAL lock_timeout = '5s';
+
+CREATE UNIQUE INDEX IF NOT EXISTS "signs_item_id_sheet_name_category_key"
+  ON "signs" ("item_id", "sheet_name", "category")
+  WHERE "is_test_data" = false AND "sheet_name" IS NOT NULL;

@@ -3,8 +3,11 @@
 import { useMemo, useState } from "react";
 
 import type { DeploySignView } from "@/lib/deploy/contract";
+import { isActivationKey } from "@/app/_components/keys";
 import type { DeployStore } from "../_lib/store";
+import { hasUsableCrew } from "../_lib/rules";
 import { filterSignsByQuery, normalizeQuery } from "../_lib/search";
+import { zoneLabel } from "../_lib/zone-label";
 
 type Buckets = {
   claimable: DeploySignView[];
@@ -12,10 +15,6 @@ type Buckets = {
   deployed: DeploySignView[];
   othersClaimedCount: number;
 };
-
-function zoneLabel(s: DeploySignView): string {
-  return s.zoneId ? `Zone ${s.zoneId}` : "Unzoned";
-}
 
 // One sign row. Deliberately dumb: the parent decides what a row click means
 // (toggle selection on mobile, focus-for-preview on desktop) and whether the
@@ -48,9 +47,32 @@ function SignRow({
         highlight
           ? "border-[var(--accent)] bg-[var(--surface-2)]"
           : "border-[var(--line)] bg-[var(--surface)]"
-      } ${onActivate ? "cursor-pointer" : ""}`}
+      } ${
+        onActivate
+          ? "cursor-pointer focus-visible:border-[var(--accent)] focus-visible:shadow-[var(--accent-glow)] focus-visible:outline-none"
+          : ""
+      }`}
       onClick={onActivate}
+      // role="button" promises assistive tech a real button: in the tab order and
+      // operable by Enter/Space. A bare onClick on an <li> delivered neither, so
+      // keyboard and switch-control users could not claim a sign or focus the
+      // preview at all — the role made it worse by announcing an operable control
+      // that wasn't one. (#180)
       role={onActivate ? "button" : undefined}
+      tabIndex={onActivate ? 0 : undefined}
+      onKeyDown={
+        onActivate
+          ? (e) => {
+              // Row itself only. Space belongs to the nested checkbox and Enter to
+              // the Release/Deploy buttons; without this the row would fire a
+              // second, conflicting action on top of theirs.
+              if (e.target !== e.currentTarget) return;
+              if (!isActivationKey(e.key)) return;
+              e.preventDefault(); // Space would otherwise scroll the list away
+              onActivate();
+            }
+          : undefined
+      }
       aria-pressed={ariaPressed}
       aria-current={focused ? "location" : undefined}
     >
@@ -63,6 +85,13 @@ function SignRow({
           // keeps a desktop checkbox click from also firing the row's focus.
           onChange={onCheckboxToggle}
           readOnly={!onCheckboxToggle}
+          // Mirror-only (mobile): skip it in the tab order, or the row's new
+          // tabIndex from #180 and this checkbox would be two consecutive stops
+          // doing the same thing. `readOnly` is inert on checkboxes — it silences
+          // React's controlled-input warning but does NOT stop native Space from
+          // flipping it — so without this the second stop also flashes a
+          // wrong checked state before the controlled re-render corrects it.
+          tabIndex={onCheckboxToggle ? undefined : -1}
           onClick={onCheckboxToggle ? (e) => e.stopPropagation() : undefined}
           aria-label={`Select ${sign.itemId}`}
           className="h-5 w-5 accent-[var(--accent)]"
@@ -95,6 +124,10 @@ export function SignList({
   focusedId,
   onFocus,
   onDeploy,
+  selected,
+  setSelected,
+  query,
+  setQuery,
 }: {
   buckets: Buckets;
   pendingSignIds: Set<number>;
@@ -106,13 +139,40 @@ export function SignList({
   layout: "mobile" | "desktop";
   focusedId: number | null;
   onFocus: (id: number) => void;
-  onDeploy: (sign: DeploySignView) => void;
+  onDeploy: (signId: number) => void;
+  // Selection + search live in DeployApp, not here. DeployApp renders EITHER the
+  // mobile or the desktop SignList, so a device that crosses the breakpoint
+  // mid-use (a tablet rotating, a window resize, a foldable) unmounts one and
+  // mounts the other — which used to silently discard an in-progress batch
+  // selection and the search text along with it. (#192)
+  selected: Set<number>;
+  setSelected: React.Dispatch<React.SetStateAction<Set<number>>>;
+  query: string;
+  setQuery: React.Dispatch<React.SetStateAction<string>>;
 }) {
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [query, setQuery] = useState("");
+  // In-flight guards. Each enqueue mints its own clientId, so a second tap before
+  // the first await resolves creates a SEPARATE outbox entry for the same action
+  // — a duplicate request and a confusing duplicate row in the queue panel. The
+  // existing `pending` badge is display-only and guards nothing. (#179)
+  //
+  // These stay LOCAL, unlike `selected`/`query` above: they describe a request
+  // this list instance has in flight, so a breakpoint switch should reset them
+  // rather than carry a stale "Releasing…" into the freshly mounted list. (#192)
+  const [claiming, setClaiming] = useState(false);
+  const [releasing, setReleasing] = useState<Set<number>>(new Set());
 
   const isDesktop = layout === "desktop";
-  const hasCrew = store.activeCrewId !== null;
+  // Not a bare non-null check: the remembered crew has to be one this user is
+  // actually in, or a stale/foreign selection leaves the claim UI armed for a
+  // claim the server will reject. (#189)
+  const hasCrew = hasUsableCrew({
+    activeCrewId: store.activeCrewId,
+    myCrewIds: store.myCrewIds,
+    // Membership is only KNOWN once a bootstrap actually succeeded. On an offline
+    // cold start it fails, leaving myCrewIds empty for lack of data rather than
+    // because the volunteer has no crew.
+    membershipKnown: store.loaded && store.bootError === null,
+  });
   const searching = normalizeQuery(query).length > 0;
 
   // Client-side quick search over the already-loaded sign set — instant and
@@ -150,11 +210,37 @@ export function SignList({
     });
   };
 
-  const claimSelected = () => {
+  const claimSelected = async () => {
     const ids = [...effectiveSelected];
-    if (ids.length > 0) {
-      void store.claim(ids);
-      setSelected(new Set());
+    if (ids.length === 0 || claiming) return;
+    // Await the durable write (store.claim surfaces its own failure) rather than
+    // firing and forgetting — a dropped claim must not look successful. (#59)
+    setClaiming(true);
+    try {
+      await store.claim(ids);
+      setSelected(new Set()); // clear ONLY on success — keep the selection to retry
+    } catch {
+      // store.claim already surfaced a notice; keep the selection.
+    } finally {
+      setClaiming(false);
+    }
+  };
+
+  const releaseOne = async (signId: number) => {
+    if (releasing.has(signId)) return;
+    setReleasing((prev) => new Set(prev).add(signId));
+    try {
+      // Await + store-owned error handling, not a bare fire-and-forget that
+      // drops a failed release. (#65)
+      await store.release([signId]);
+    } catch {
+      // store.release already surfaced a notice.
+    } finally {
+      setReleasing((prev) => {
+        const next = new Set(prev);
+        next.delete(signId);
+        return next;
+      });
     }
   };
 
@@ -217,19 +303,20 @@ export function SignList({
                     <div className="flex gap-2">
                       <button
                         type="button"
+                        disabled={releasing.has(s.id)}
                         onClick={(e) => {
                           e.stopPropagation();
-                          store.release([s.id]);
+                          void releaseOne(s.id);
                         }}
                         className="btn btn-sm"
                       >
-                        Release
+                        {releasing.has(s.id) ? "Releasing…" : "Release"}
                       </button>
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onDeploy(s);
+                          onDeploy(s.id);
                         }}
                         className="btn btn-sm btn-primary"
                       >
@@ -317,11 +404,18 @@ export function SignList({
           </button>
           <button
             type="button"
+            disabled={claiming}
             onClick={claimSelected}
             className="btn btn-primary"
           >
-            Claim {effectiveSelected.size} sign
-            {effectiveSelected.size === 1 ? "" : "s"}
+            {claiming ? (
+              "Claiming…"
+            ) : (
+              <>
+                Claim {effectiveSelected.size} sign
+                {effectiveSelected.size === 1 ? "" : "s"}
+              </>
+            )}
           </button>
         </div>
       )}

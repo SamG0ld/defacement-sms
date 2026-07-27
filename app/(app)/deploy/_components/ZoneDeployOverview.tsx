@@ -18,10 +18,14 @@ export function ZoneDeployOverview({
   deployed,
   total,
   zones,
+  unzoned = 0,
 }: {
   deployed: number;
   total: number;
   zones: ZoneProgress[];
+  // Signs with no zone, excluded from this zone-scoped gauge (see page.tsx).
+  // Surfaced as a caption so the x/y here reconciles with the fleet-wide readout.
+  unzoned?: number;
 }) {
   if (zones.length === 0) return null;
 
@@ -64,6 +68,12 @@ export function ZoneDeployOverview({
             </div>
           </div>
         </div>
+        {unzoned > 0 ? (
+          <div className="mt-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-[var(--zinc-500)]">
+            zone-scoped · {unzoned} unzoned sign{unzoned === 1 ? "" : "s"} not
+            counted here
+          </div>
+        ) : null}
       </div>
 
       {/* Per-zone progress */}

@@ -1,6 +1,4 @@
-import { redirect } from "next/navigation";
-
-import { getSession } from "@/lib/session";
+import { requirePageRole } from "@/lib/page-guards";
 import { prisma } from "@/lib/db";
 
 import { addUser, setUserRole } from "./actions";
@@ -13,12 +11,9 @@ type UsersPageProps = {
 };
 
 export default async function UsersPage({ searchParams }: UsersPageProps) {
-  const session = await getSession();
-  // The (app) layout already guarantees authenticated + active; this is the
-  // admin-only gate for user management.
-  if (session?.user?.role !== "admin") {
-    redirect("/");
-  }
+  // Admin-only gate for user management (defense in depth on top of the (app)
+  // layout's authn redirect). Returns the session for the self-row check below.
+  const session = await requirePageRole("admin");
   const { error } = await searchParams;
 
   const users = await prisma.user.findMany({

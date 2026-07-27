@@ -1,16 +1,11 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 
-import { getSession } from "@/lib/session";
-import { hasRole } from "@/lib/rbac";
+import { requirePageRole } from "@/lib/page-guards";
 
 import { ImportWizard } from "./_components/ImportWizard";
 
 export default async function ImportSignsPage() {
-  const session = await getSession();
-  if (!session?.user?.role || !hasRole(session.user.role, "lead")) {
-    redirect("/signs");
-  }
+  await requirePageRole("lead", "/signs");
 
   return (
     <div className="space-y-6">

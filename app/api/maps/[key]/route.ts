@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { logError } from "@/lib/log";
 import { getSession } from "@/lib/session";
 
 // Serves a floor map's image bytes from the DB (floor_maps.image_data). This is
@@ -24,54 +25,61 @@ export async function GET(
 
   const { key } = await params;
 
-  // Read metadata only first. A conditional request (If-None-Match) then returns
-  // 304 WITHOUT pulling the (up to 10 MB) bytea out of Postgres — so repeated
-  // cache-validating loads never touch the blob.
-  const meta = await prisma.floorMap.findUnique({
-    where: { key },
-    select: { contentType: true, updatedAt: true },
-  });
-  if (!meta) return new Response("Not found", { status: 404 });
+  try {
+    // Read metadata only first. A conditional request (If-None-Match) then returns
+    // 304 WITHOUT pulling the (up to 10 MB) bytea out of Postgres — so repeated
+    // cache-validating loads never touch the blob.
+    const meta = await prisma.floorMap.findUnique({
+      where: { key },
+      select: { contentType: true, updatedAt: true },
+    });
+    if (!meta) return new Response("Not found", { status: 404 });
 
-  // Allowlist check: contentType is written by validateImageUpload (which only
-  // emits these three values), but we guard at serve-time too so a future direct
-  // DB write or migration can't cause us to serve an arbitrary Content-Type
-  // (e.g. text/html → stored XSS via a compromised admin row).
-  const ALLOWED_CONTENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
-  if (!ALLOWED_CONTENT_TYPES.has(meta.contentType)) {
-    return new Response("Not found", { status: 404 });
+    // Allowlist check: contentType is written by validateImageUpload (which only
+    // emits these three values), but we guard at serve-time too so a future direct
+    // DB write or migration can't cause us to serve an arbitrary Content-Type
+    // (e.g. text/html → stored XSS via a compromised admin row).
+    const ALLOWED_CONTENT_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+    if (!ALLOWED_CONTENT_TYPES.has(meta.contentType)) {
+      return new Response("Not found", { status: 404 });
+    }
+
+    const etag = `"${meta.updatedAt.getTime()}"`;
+    if (_req.headers.get("if-none-match") === etag) {
+      return new Response(null, { status: 304, headers: { ETag: etag } });
+    }
+
+    // Cache miss → fetch the bytes. Re-check in case the row was deleted between
+    // the two queries.
+    const full = await prisma.floorMap.findUnique({
+      where: { key },
+      select: { imageData: true },
+    });
+    if (!full) return new Response("Not found", { status: 404 });
+
+    // Prisma Bytes → Uint8Array; a fresh copy so the response body owns a clean
+    // ArrayBuffer (not the larger pooled buffer the driver may hand back).
+    const bytes = Uint8Array.from(full.imageData);
+    return new Response(bytes, {
+      status: 200,
+      headers: {
+        // contentType is a sniffed literal (image/png|jpeg|webp), never client-set.
+        "Content-Type": meta.contentType,
+        // Defense-in-depth: never let the browser sniff this as anything else, and
+        // render it inline as an image rather than treating it as a document.
+        // (X-Content-Type-Options is also set globally in next.config.ts.)
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": "inline",
+        // Private (auth-gated) + revalidate via ETag so a replaced image is picked
+        // up promptly without re-downloading on every navigation.
+        "Cache-Control": "private, max-age=300, must-revalidate",
+        ETag: etag,
+      },
+    });
+  } catch (err) {
+    // A DB failure here was previously an uncaught 500 with only Next's default
+    // log. Log with context and return a clean 502.
+    logError("api.maps.serve-failed", err, { key });
+    return new Response("Image unavailable", { status: 502 });
   }
-
-  const etag = `"${meta.updatedAt.getTime()}"`;
-  if (_req.headers.get("if-none-match") === etag) {
-    return new Response(null, { status: 304, headers: { ETag: etag } });
-  }
-
-  // Cache miss → fetch the bytes. Re-check in case the row was deleted between
-  // the two queries.
-  const full = await prisma.floorMap.findUnique({
-    where: { key },
-    select: { imageData: true },
-  });
-  if (!full) return new Response("Not found", { status: 404 });
-
-  // Prisma Bytes → Uint8Array; a fresh copy so the response body owns a clean
-  // ArrayBuffer (not the larger pooled buffer the driver may hand back).
-  const bytes = Uint8Array.from(full.imageData);
-  return new Response(bytes, {
-    status: 200,
-    headers: {
-      // contentType is a sniffed literal (image/png|jpeg|webp), never client-set.
-      "Content-Type": meta.contentType,
-      // Defense-in-depth: never let the browser sniff this as anything else, and
-      // render it inline as an image rather than treating it as a document.
-      // (X-Content-Type-Options is also set globally in next.config.ts.)
-      "X-Content-Type-Options": "nosniff",
-      "Content-Disposition": "inline",
-      // Private (auth-gated) + revalidate via ETag so a replaced image is picked
-      // up promptly without re-downloading on every navigation.
-      "Cache-Control": "private, max-age=300, must-revalidate",
-      ETag: etag,
-    },
-  });
 }

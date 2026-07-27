@@ -30,13 +30,17 @@ export function FloorPinView({
   src,
   label,
   pins,
+  imageWidth,
 }: {
   src: string;
   label: string;
   pins: FloorPin[];
+  // The floor image's native width — lets ZoomCanvas allow zooming to native
+  // pixels so a dense map reads at its detail. Omitted → ZoomCanvas default.
+  imageWidth?: number | null;
 }) {
   return (
-    <ZoomCanvas>
+    <ZoomCanvas imageWidth={imageWidth}>
       <div className="relative w-full bg-white">
         <FloorImage src={src} label={label} />
         {/* Pins overlay the image in the same coordinate space. The layer passes

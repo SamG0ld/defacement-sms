@@ -35,10 +35,17 @@ const other: ApiActor = { userId: "uOther", email: "other@example.com", role: "v
 const lead: ApiActor = { userId: "uLead", email: "lead@example.com", role: "lead" };
 
 let seq = 0;
-function seedSign(status = "sorted") {
+function seedSign(status = "sorted", over: Record<string, unknown> = {}) {
   seq += 1;
   return prisma.sign.create({
-    data: { itemId: `A-${seq}`, signText: `S${seq}`, signType: "Sign", size: "22x28", status: status as never },
+    data: {
+      itemId: `A-${seq}`,
+      signText: `S${seq}`,
+      signType: "Sign",
+      size: "22x28",
+      status: status as never,
+      ...over,
+    },
   });
 }
 
@@ -82,7 +89,10 @@ async function captureRedirect(p: Promise<unknown>): Promise<string> {
   throw new Error("expected a redirect, but none was thrown");
 }
 
-beforeEach(() => vi.mocked(auth).mockReset());
+beforeEach(() => {
+  vi.mocked(auth).mockReset();
+  seq = 0; // reset so seeded ids never depend on prior tests' run order (#63)
+});
 afterEach(() => vi.clearAllMocks());
 
 // ── Native offline-sync API (the #17 surface) ────────────────────────────────
@@ -134,6 +144,48 @@ describe("setSignStatus (native) — volunteer authorization", () => {
     const res = await setStatus(signId, "handed_off", vol);
     expect(res.result).toBe("forbidden");
     expect((await prisma.sign.findUnique({ where: { id: signId } }))?.status).toBe("sorted");
+  });
+
+  // #232: the /signs row status control commits through the offline OUTBOX, which
+  // syncs here — not through updateSignStatus. Putting the category rule in the
+  // shared policy is what makes the outbox refuse what the dropdown refuses,
+  // instead of leaving the queue as a way around it.
+  it("forbids a lead setting installed on a non-external sign (offline-sync path)", async () => {
+    const sign = await seedSign("delivered", { category: "easel_sign" });
+    const res = await setStatus(sign.id, "installed", lead);
+    expect(res.result).toBe("forbidden");
+    const after = await prisma.sign.findUnique({ where: { id: sign.id } });
+    expect(after?.status).toBe("delivered");
+    expect(after?.installedAt).toBeNull();
+    expect(await prisma.statusHistory.count({ where: { signId: sign.id } })).toBe(0);
+  });
+
+  it("allows a lead setting installed on an external item (offline-sync path)", async () => {
+    const sign = await seedSign("delivered", { category: "ops_map" });
+    const res = await setStatus(sign.id, "installed", lead);
+    expect(res.result).toBe("applied");
+    expect((await prisma.sign.findUnique({ where: { id: sign.id } }))?.status).toBe(
+      "installed",
+    );
+  });
+
+  it("emits a structured warn line on a forbidden refusal so on-call can search it (#77)", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const sign = await seedSign("sorted");
+      const res = await setStatus(sign.id, "deployed", vol); // unclaimed → forbidden
+      expect(res.result).toBe("forbidden");
+      const line = warn.mock.calls
+        .map((c) => String(c[0]))
+        .find((s) => s.includes("deploy.set-status.forbidden"));
+      expect(line).toBeDefined();
+      expect(line).toContain(`"signId":${sign.id}`);
+      expect(line).toContain(`"attemptedStatus":"deployed"`);
+    } finally {
+      // Restore in a finally so a failed assertion can't leave console.warn
+      // suppressed for the rest of the file (afterEach only clears call history).
+      warn.mockRestore();
+    }
   });
 });
 

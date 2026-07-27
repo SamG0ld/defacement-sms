@@ -11,6 +11,8 @@
 
 import { put, get, del } from "@vercel/blob";
 
+import { logError } from "@/lib/log";
+
 const EXT: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -43,7 +45,7 @@ export async function deletePrivateImage(blobPathname: string): Promise<void> {
   try {
     await del(blobPathname);
   } catch (err) {
-    console.error("blob del failed", blobPathname, err);
+    logError("blob.delete-failed", err, { blobPathname });
   }
 }
 
@@ -62,7 +64,7 @@ export async function streamPrivateImage(
   } catch (err) {
     // Some SDK versions throw (rather than return null) for a missing blob. Treat
     // a missing object as 404; surface anything else as a 502 (upstream failure).
-    console.error("blob get failed", blobPathname, err);
+    logError("blob.get-failed", err, { blobPathname });
     return new Response("Image unavailable", { status: 502 });
   }
   if (!result) return new Response("Not found", { status: 404 });

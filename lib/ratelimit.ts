@@ -1,6 +1,8 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 
+import { logError, logWarn } from "@/lib/log";
+
 // Rate limiter is best-effort. If Upstash env vars are missing (typical for
 // local dev), every check returns success — the app keeps working, just
 // without DDoS/brute-force protection. In production both vars are required;
@@ -68,14 +70,28 @@ const OPEN: RateLimitResult = {
   reset: 0,
 };
 
+// Warn once (not per request) when the limiter is unconfigured, so the fact that
+// we're running with no brute-force/enumeration backstop is observable in the
+// logs without spamming a line on every check.
+let warnedUnconfigured = false;
+
 // The limiter is a best-effort backstop, so it fails OPEN: an Upstash outage or
 // network blip must degrade to "no throttling", never take down login or the
-// floor sync with it.
+// floor sync with it. Every fail-open is logged so the degradation is visible.
 async function safeLimit(
   limiter: Ratelimit | null,
   key: string,
 ): Promise<RateLimitResult> {
-  if (!limiter) return OPEN;
+  if (!limiter) {
+    if (!warnedUnconfigured) {
+      warnedUnconfigured = true;
+      logWarn(
+        "ratelimit.fail-open",
+        "rate limiter unconfigured (UPSTASH_* unset), failing open — no brute-force/enumeration protection",
+      );
+    }
+    return OPEN;
+  }
   try {
     const result = await limiter.limit(key);
     return {
@@ -84,7 +100,9 @@ async function safeLimit(
       reset: result.reset,
     };
   } catch (err) {
-    console.error("rate limiter unavailable, failing open", err);
+    // Distinct scope so an alert can fire on "protection is currently OFF" —
+    // exactly when an attacker would benefit from the limiter being down.
+    logError("ratelimit.fail-open", err);
     return OPEN;
   }
 }

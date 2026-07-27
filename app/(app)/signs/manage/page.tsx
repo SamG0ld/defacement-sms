@@ -1,7 +1,6 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 
-import { getSession } from "@/lib/session";
+import { requirePageRole } from "@/lib/page-guards";
 import { prisma } from "@/lib/db";
 
 import { formatDateTime } from "../_lib";
@@ -14,11 +13,9 @@ export default async function ManageSignsPage({
 }: {
   searchParams: SearchParams;
 }) {
-  const session = await getSession();
-  // Admin-only — destructive bulk operations.
-  if (session?.user?.role !== "admin") {
-    redirect("/signs");
-  }
+  // Admin-only — destructive bulk operations (defense in depth on top of the
+  // (app) layout's authn redirect).
+  await requirePageRole("admin", "/signs");
 
   const sp = await searchParams;
   const error = typeof sp.error === "string" ? sp.error : "";

@@ -1,8 +1,9 @@
 import Link from "next/link";
 
-import { getSession } from "@/lib/session";
+import { requirePageSession } from "@/lib/page-guards";
 import { prisma } from "@/lib/db";
 import { hasRole } from "@/lib/rbac";
+import { SYSTEM_TAG_SLUG_LIST } from "@/lib/tags";
 import { Icons } from "@/app/_components/Icons";
 import { TelemetryGauge } from "@/app/_components/TelemetryGauge";
 
@@ -22,6 +23,7 @@ import { SearchField } from "./_components/SearchField";
 import { SignCards } from "./_components/SignCards";
 import { SignsTable } from "./_components/SignsTable";
 import { SignsView } from "./_components/SignsView";
+import { groupSignRows } from "./_components/grouping";
 import { signRowSelect } from "./_components/types";
 
 const PAGE_SIZE = 50;
@@ -37,6 +39,7 @@ type SearchParams = Promise<{
   due?: string;
   page?: string;
   error?: string;
+  notice?: string;
 }>;
 
 function firstStr(v: string | undefined): string {
@@ -46,21 +49,31 @@ function firstStr(v: string | undefined): string {
 // The signType dropdown's DISTINCT scan doesn't need to run on every list load —
 // the set of types changes only on import/edit, so memo it per server instance
 // with a short TTL. Worst case: a brand-new type takes up to 60s to appear in
-// the filter dropdown.
+// the filter dropdown. The in-flight promise is memoed too, so concurrent
+// requests that both miss the TTL share one query instead of double-fetching.
 let signTypesMemo: { value: string[]; expires: number } | null = null;
+let signTypesInFlight: Promise<string[]> | null = null;
 
 async function getSignTypes(): Promise<string[]> {
   if (signTypesMemo && Date.now() < signTypesMemo.expires) {
     return signTypesMemo.value;
   }
-  const rows = await prisma.sign.findMany({
-    distinct: ["signType"],
-    orderBy: { signType: "asc" },
-    select: { signType: true },
-  });
-  const value = rows.map((r) => r.signType).filter(Boolean);
-  signTypesMemo = { value, expires: Date.now() + 60_000 };
-  return value;
+  if (signTypesInFlight) return signTypesInFlight;
+  signTypesInFlight = (async () => {
+    const rows = await prisma.sign.findMany({
+      distinct: ["signType"],
+      orderBy: { signType: "asc" },
+      select: { signType: true },
+    });
+    const value = rows.map((r) => r.signType).filter(Boolean);
+    signTypesMemo = { value, expires: Date.now() + 60_000 };
+    return value;
+  })();
+  try {
+    return await signTypesInFlight;
+  } finally {
+    signTypesInFlight = null;
+  }
 }
 
 // Serialize the active filters back into a query string (used by the pager, the
@@ -93,11 +106,9 @@ export default async function SignsPage({
 }: {
   searchParams: SearchParams;
 }) {
-  const session = await getSession();
-  const canManage = session?.user?.role
-    ? hasRole(session.user.role, "lead")
-    : false;
-  const isAdmin = session?.user?.role === "admin";
+  const session = await requirePageSession();
+  const canManage = hasRole(session.user.role, "lead");
+  const isAdmin = session.user.role === "admin";
 
   const sp = await searchParams;
   const f = {
@@ -111,6 +122,7 @@ export default async function SignsPage({
     due: firstStr(sp.due),
   };
   const error = firstStr(sp.error);
+  const notice = firstStr(sp.notice);
   const page = Math.max(1, Number.parseInt(firstStr(sp.page) || "1", 10) || 1);
 
   // The list query honours every active filter; the per-status counts that feed
@@ -122,33 +134,45 @@ export default async function SignsPage({
   const where = buildSignWhere(f);
   const whereCounts = buildSignWhere({ ...f, status: "", due: "" });
 
-  const [signs, total, statusGroups, zones, tags, signTypes] = await Promise.all(
-    [
-      prisma.sign.findMany({
-        where,
-        select: signRowSelect,
-        orderBy: [{ deploymentPriority: "asc" }, { itemId: "asc" }],
-        take: PAGE_SIZE,
-        skip: (page - 1) * PAGE_SIZE,
-      }),
-      prisma.sign.count({ where }),
-      prisma.sign.groupBy({
-        by: ["status"],
-        where: whereCounts,
-        _count: { _all: true },
-      }),
-      prisma.zone.findMany({
-        where: { isActive: true },
-        orderBy: [{ deploymentPriority: "asc" }, { zoneCode: "asc" }],
-        select: { id: true, zoneCode: true, zoneName: true, building: true },
-      }),
-      prisma.signTag.findMany({
-        orderBy: { name: "asc" },
-        select: { id: true, slug: true, name: true },
-      }),
-      getSignTypes(),
-    ],
-  );
+  const [allRows, statusGroups, zones, tags, signTypes, archivedCount] =
+    await Promise.all([
+    // The whole filtered set (not a row page): identical signs are collapsed into
+    // groups and the list paginates over GROUPS, so a group can't be split across a
+    // page boundary. Bounded to a con's few hundred signs — see groupSignRows.
+    prisma.sign.findMany({
+      where,
+      select: signRowSelect,
+      orderBy: [{ deploymentPriority: "asc" }, { itemId: "asc" }],
+    }),
+    prisma.sign.groupBy({
+      by: ["status"],
+      where: whereCounts,
+      _count: { _all: true },
+    }),
+    prisma.zone.findMany({
+      where: { isActive: true },
+      orderBy: [{ deploymentPriority: "asc" }, { zoneCode: "asc" }],
+      select: { id: true, zoneCode: true, zoneName: true, building: true },
+    }),
+    prisma.signTag.findMany({
+      // Hide system tags (e.g. `master-sheet`) from the filter chips — they're
+      // internal scoping markers, not user-curated labels (lib/tags.ts).
+      where: { slug: { notIn: SYSTEM_TAG_SLUG_LIST } },
+      orderBy: { name: "asc" },
+      select: { id: true, slug: true, name: true },
+    }),
+    getSignTypes(),
+    // Count of soft-removed signs — drives the "Removed" filter chip (which
+    // otherwise wouldn't appear, since archived is out of SIGN_STATUSES).
+    prisma.sign.count({ where: { status: "archived" } }),
+  ]);
+
+  // `total` is the true count of physical signs (rows) — the headline number. The
+  // list itself paginates over collapsed GROUPS.
+  const total = allRows.length;
+  const allGroups = groupSignRows(allRows);
+  const totalPages = Math.max(1, Math.ceil(allGroups.length / PAGE_SIZE));
+  const groups = allGroups.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   // Per-stage counts → telemetry. "deployed" telemetry counts the two terminal
   // up-states (deployed + externally installed).
@@ -163,7 +187,6 @@ export default async function SignsPage({
     ? Math.round((deployedCount / grandTotal) * 100)
     : 0;
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const baseQuery = filterQuery(f);
   // Other active filters minus the search term — drives the live SearchField so a
   // search preserves status/zone/tag/etc. (filterQuery never emits `page`, and
@@ -187,7 +210,7 @@ export default async function SignsPage({
 
   // Props for the selection island / bulk bar. returnTo keeps the user on this
   // exact filtered + paged view after a bulk action revalidates.
-  const pageIds = signs.map((s) => s.id);
+  const pageIds = groups.flatMap((g) => g.rows.map((r) => r.id));
   const returnParams = new URLSearchParams(baseQuery);
   if (page > 1) returnParams.set("page", String(page));
   const returnTo = `/signs${returnParams.toString() ? `?${returnParams.toString()}` : ""}`;
@@ -227,10 +250,29 @@ export default async function SignsPage({
           >
             Export CSV
           </Link>
+          <Link
+            href={`/signs/export/sectioned${baseQuery ? `?${baseQuery}` : ""}`}
+            className="btn"
+            title="Human-audit CSV grouped into === FORMAT === sections by size (not re-importable)"
+          >
+            Export by size
+          </Link>
+          <Link
+            href="/signs/by-size"
+            className="btn"
+            title="The complete record of active signs per size, plus the Figma reconcile manifest"
+          >
+            By size
+          </Link>
           {isAdmin && (
-            <Link href="/signs/manage" className="btn">
-              Manage
-            </Link>
+            <>
+              <Link href="/signs/manage" className="btn">
+                Manage
+              </Link>
+              <Link href="/signs/pin" className="btn">
+                Auto-pin
+              </Link>
+            </>
           )}
           {canManage && (
             <>
@@ -239,6 +281,12 @@ export default async function SignsPage({
               </Link>
               <Link href="/signs/import" className="btn">
                 Import
+              </Link>
+              <Link href="/signs/reconcile" className="btn">
+                Reconcile
+              </Link>
+              <Link href="/signs/specialty" className="btn">
+                Specialty
               </Link>
               <Link href="/signs/new" className="btn btn-primary">
                 + New sign
@@ -251,6 +299,12 @@ export default async function SignsPage({
       {error && (
         <div className="rounded border border-red-900 bg-red-950 px-3 py-2 text-xs text-red-200">
           {error}
+        </div>
+      )}
+
+      {notice && (
+        <div className="rounded border border-emerald-900 bg-emerald-950 px-3 py-2 text-xs text-emerald-200">
+          {notice}
         </div>
       )}
 
@@ -280,6 +334,7 @@ export default async function SignsPage({
         active={f.status}
         counts={counts}
         total={grandTotal}
+        archivedCount={archivedCount}
         hrefForStatus={hrefForStatus}
       />
 
@@ -388,7 +443,7 @@ export default async function SignsPage({
         </form>
       </details>
 
-      {signs.length === 0 ? (
+      {groups.length === 0 ? (
         <div className="panel px-4 py-10 text-center font-mono text-sm text-[var(--zinc-500)]">
           {"// no signs match these filters"}
         </div>
@@ -398,8 +453,8 @@ export default async function SignsPage({
               them on the client per the device signal (fewer hydrated rows than
               the old md:hidden / hidden-md:block double-DOM). */}
           <SignsView
-            table={<SignsTable signs={signs} />}
-            cards={<SignCards signs={signs} />}
+            table={<SignsTable groups={groups} />}
+            cards={<SignCards groups={groups} />}
           />
 
           <BulkBar

@@ -55,6 +55,7 @@ export default defineConfig({
         "lib/print-summary.ts",
         "lib/csv.ts",
         "lib/deploy/resolve.ts",
+        "lib/offline/*.ts",
         "**/deploy/_lib/sync.ts",
         "**/deploy/_lib/outbox.ts",
         "**/deploy/_lib/api.ts",

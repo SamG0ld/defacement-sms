@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
-import { auth, signIn } from "@/lib/auth";
+import { auth } from "@/lib/auth";
+import { startGoogleSignIn, startMagicLinkSignIn } from "@/lib/sign-in";
 
 import { LoginDoor } from "./_components/LoginDoor";
 import { LoginEmblem } from "./_components/LoginEmblem";
@@ -24,6 +25,10 @@ function errorMessage(code: string): string {
       return "That sign-in link is invalid or has expired. Request a new one.";
     case "Configuration":
       return "We hit a temporary problem signing you in. Please try again in a moment.";
+    // Our own code (not NextAuth's): the per-IP auth limiter turned this attempt
+    // away before it reached signIn — see lib/sign-in.ts.
+    case "RateLimited":
+      return "Too many sign-in attempts from this network. Wait a minute and try again.";
     default:
       return "Sign in failed. Please try again.";
   }
@@ -66,22 +71,15 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
 
   // Bound server actions — same closed-registration auth as before, just passed
   // to the client door so its <form action> posts hit real NextAuth sign-in.
+  // Both bodies live in lib/sign-in.ts so the per-IP rate limiting they now
+  // apply (#173) is unit-testable; these wrappers only bind the destination.
   async function googleAction() {
     "use server";
-    await signIn("google", { redirectTo: dest });
+    await startGoogleSignIn(dest);
   }
   async function magicLinkAction(formData: FormData) {
     "use server";
-    const email = String(formData.get("email") ?? "").trim();
-    // Validate the address shape server-side — the client <input type="email">
-    // is bypassable via a direct POST. On a malformed value, short-circuit to the
-    // same "link dispatched" confirmation WITHOUT calling signIn: identical to a
-    // valid-but-unknown email, so the door never reveals whether an address is
-    // real (no enumeration) and garbage never enters the auth pipeline.
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      redirect("/login?type=email");
-    }
-    await signIn("resend", { email, redirectTo: dest });
+    await startMagicLinkSignIn(dest, String(formData.get("email") ?? ""));
   }
 
   return (

@@ -7,20 +7,32 @@
 // CSV grammar and signTypeFromSize for the size -> template/canvas bucket, so the
 // grouping key stays identical to the rest of the app.
 
-import { parseCsv } from "@/lib/csv";
+import { parseCsv, stripFormulaGuard } from "@/lib/csv";
 import { signTypeFromSize } from "@/lib/print-summary";
 
 // Canonical contract field -> accepted header aliases (compared lowercased +
 // trimmed). Mirrors the alias spirit of app/(app)/signs/import/_map.ts so a
-// slightly reshaped export still parses. Only these four columns matter to a
+// slightly reshaped export still parses. Only these five columns matter to a
 // generator; every other export column is ignored.
 const HEADER_ALIASES = {
   // No bare "id" — it's the canonical export header "Item ID"; a generic "id"
   // alias would mis-bind to any other column literally named id.
   itemId: ["item id", "itemid", "map#", "map #", "map"],
   signText: ["sign text", "signtext", "text", "sign"],
+  // Back-face render text for a double-sided board whose faces differ (same art,
+  // different words). Optional — only meaningful when doubleSided; a generator draws
+  // a second face from it. "" when absent.
+  backText: ["back text", "backtext"],
   size: ["size", "material"],
   zone: ["zone", "zone code"],
+  // The room / exact destination printed bottom-right on the sign face (DC34).
+  // Optional — a generator renders it verbatim only when non-empty.
+  room: ["room"],
+  // Double-sided flag. The export emits an explicit "Double-Sided" Yes/No column;
+  // when present it's authoritative, else we fall back to the size-string heuristic
+  // ("...Double..."). Keeps a 4'x8' Double in its own generation batch (two print
+  // faces) instead of collapsing into the Single meterboard group.
+  doubleSided: ["double-sided", "double sided", "doublesided", "is double sided"],
 } as const;
 
 // Cap on data rows. Matches the export route's own MAX_EXPORT_ROWS — a sign list
@@ -34,16 +46,21 @@ type ContractField = keyof typeof HEADER_ALIASES;
 export type SignListItem = {
   itemId: string; // for output file naming (SIGN-NNN - NAME); "" if absent
   renderText: string; // Sign Text, trimmed + UPPERCASE — the string to render
+  backText: string; // back-face render text, trimmed + UPPERCASE; "" if none (only used when doubleSided)
   size: string; // raw Size string from the export ("" if absent)
   template: string; // signTypeFromSize(size) — the template/canvas bucket
+  doubleSided: boolean; // two print faces — splits its own generation batch
   zone: string; // Zone code for grouping/labeling ("" if absent)
+  room: string; // Room / exact destination, verbatim — printed bottom-right; "" if absent
 };
 
-// Signs sharing one template/canvas. Different sizes need different templates,
-// so a generator builds one component per group.
+// Signs sharing one template/canvas AND double-sidedness. Different sizes need
+// different templates; single vs double of the same size are distinct print jobs
+// (two faces), so a generator builds one component per group.
 export type SignSizeGroup = {
   template: string; // canonical form, e.g. '22"x28"' (signTypeFromSize output)
   size: string; // a representative raw size from this group
+  doubleSided: boolean; // whether this group's signs print on two faces
   items: SignListItem[];
 };
 
@@ -79,24 +96,31 @@ function mapContractHeaders(
   return map;
 }
 
-// Inverse of lib/csv.ts neutralizeFormula: the export prefixes a single quote to
-// cells that begin with a formula char (= + - @ tab CR) so a spreadsheet won't
-// execute them. Strip it back off so it never renders on the sign face.
-function stripFormulaGuard(s: string): string {
-  return /^'[=+\-@\t\r]/.test(s) ? s.slice(1) : s;
-}
-
+// stripFormulaGuard (lib/csv.ts) undoes the export's formula guard so the quote
+// never renders on the sign face. Imported, not re-implemented — a local copy is
+// how it drifted out of step with the export guard before (#202).
 const at = (row: string[], idx: number | undefined): string =>
   idx === undefined ? "" : stripFormulaGuard((row[idx] ?? "").trim());
+
+// Double-sided: an explicit column value wins (Yes/Y/true/1/x/✓), else fall back to
+// the size-string heuristic ("...Double..."). Mirrors the import parser's rule
+// (app/(app)/signs/import/_map.ts parseDoubleSided) so the two agree.
+const DOUBLE_TRUTHY = new Set(["y", "yes", "true", "x", "1", "✓"]);
+function parseDoubleSided(cell: string, size: string): boolean {
+  if (cell) return DOUBLE_TRUTHY.has(cell.toLowerCase());
+  return /double/i.test(size); // identical to import's parseDoubleSided fallback
+}
 
 // Parse the app's sign export CSV into a render-ready, size-grouped list.
 //
 // Contract:
 //  - `Sign Text` is REQUIRED (the render string). A missing header throws — the
 //    file isn't a sign export and silently producing zero signs would be worse.
-//  - `Item ID` / `Size` / `Zone` are optional (default to "" / "Sign" template).
+//  - `Item ID` / `Size` / `Zone` / `Room` are optional (default to "" / "Sign"
+//    template).
 //  - Each sign renders `Sign Text` alone, uppercased; `Item ID` is for file
-//    naming only and never part of the rendered text.
+//    naming only and never part of the rendered text. `Room` (when present) is
+//    the verbatim string a generator prints bottom-right.
 export function parseSignListCsv(csvText: string): ParsedSignList {
   const rows = parseCsv(csvText);
   if (rows.length === 0) {
@@ -130,28 +154,42 @@ export function parseSignListCsv(csvText: string): ParsedSignList {
     }
 
     const size = at(row, map.size);
+    const backText = at(row, map.backText);
     items.push({
       itemId: at(row, map.itemId),
       renderText: signText.toUpperCase(),
+      backText: backText ? backText.toUpperCase() : "",
       size,
       template: signTypeFromSize(size),
+      doubleSided: parseDoubleSided(at(row, map.doubleSided), size),
       zone: at(row, map.zone),
+      room: at(row, map.room),
     });
   }
 
   return { items, groups: groupByTemplate(items), skipped };
 }
 
-// Bucket items by their template (size group), preserving first-seen order so a
-// generated batch is stable and reviewable.
+// Bucket items by their template (size group) AND double-sidedness, preserving
+// first-seen order so a generated batch is stable and reviewable. Single vs double
+// of the same template split into separate groups (a double is two print faces), so
+// a 4'x8' Double is never folded into the Single meterboard batch. signTypeFromSize
+// emits a fixed, finite set of templates, so a "<template> <bool>" key can't collide
+// (no template ends in " true"/" false").
 function groupByTemplate(items: SignListItem[]): SignSizeGroup[] {
   const groups: SignSizeGroup[] = [];
-  const byTemplate = new Map<string, SignSizeGroup>();
+  const byKey = new Map<string, SignSizeGroup>();
   for (const item of items) {
-    let group = byTemplate.get(item.template);
+    const key = `${item.template} ${item.doubleSided}`;
+    let group = byKey.get(key);
     if (!group) {
-      group = { template: item.template, size: item.size, items: [] };
-      byTemplate.set(item.template, group);
+      group = {
+        template: item.template,
+        size: item.size,
+        doubleSided: item.doubleSided,
+        items: [],
+      };
+      byKey.set(key, group);
       groups.push(group);
     }
     group.items.push(item);

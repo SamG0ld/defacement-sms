@@ -1,9 +1,9 @@
 import Link from "next/link";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 
-import { getSession } from "@/lib/session";
+import { requirePageRole } from "@/lib/page-guards";
 import { prisma } from "@/lib/db";
-import { hasRole } from "@/lib/rbac";
+import { SYSTEM_TAG_SLUG_LIST } from "@/lib/tags";
 
 import { updateSign } from "../../actions";
 import { SignForm } from "../../_components/SignForm";
@@ -11,10 +11,7 @@ import { SignForm } from "../../_components/SignForm";
 type Params = Promise<{ id: string }>;
 
 export default async function EditSignPage({ params }: { params: Params }) {
-  const session = await getSession();
-  if (!session?.user?.role || !hasRole(session.user.role, "lead")) {
-    redirect("/signs");
-  }
+  await requirePageRole("lead", "/signs");
 
   const { id } = await params;
   const signId = Number.parseInt(id, 10);
@@ -25,12 +22,26 @@ export default async function EditSignPage({ params }: { params: Params }) {
       where: { id: signId },
       include: { tagAssignments: { select: { tagId: true } } },
     }),
+    // Active zones PLUS this sign's own zone even if it has since been
+    // deactivated: without it the <select> has no option matching the sign's
+    // zoneId, falls back to "— none —", and saving any unrelated field silently
+    // clears the placement. The relation filter keeps this one query (and inside
+    // the Promise.all) rather than serialising behind the sign fetch.
     prisma.zone.findMany({
-      where: { isActive: true },
+      where: { OR: [{ isActive: true }, { signs: { some: { id: signId } } }] },
       orderBy: [{ deploymentPriority: "asc" }, { zoneCode: "asc" }],
-      select: { id: true, zoneCode: true, zoneName: true, building: true },
+      select: {
+        id: true,
+        zoneCode: true,
+        zoneName: true,
+        building: true,
+        isActive: true,
+      },
     }),
     prisma.signTag.findMany({
+      // System tags (e.g. `master-sheet`) aren't user-assignable (lib/tags.ts); they
+      // stay put across an edit because updateSign preserves them (see actions.ts).
+      where: { slug: { notIn: SYSTEM_TAG_SLUG_LIST } },
       orderBy: { name: "asc" },
       select: { id: true, name: true },
     }),

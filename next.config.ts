@@ -30,6 +30,25 @@ const nextConfig: NextConfig = {
   // Docker runtime image carries only the traced deps, not the full node_modules
   // or source tree. See Dockerfile / DEPLOY.md.
   output: "standalone",
+  // Denial-of-wallet (m16): the app uses plain <img> everywhere and serves art
+  // bytes through its own auth-gated API routes — nothing imports next/image. Yet
+  // Next's /_next/image optimizer is live by default, so an attacker could hammer
+  // /_next/image?url=…&w=…&q=… across many size/quality combos to rack up billed
+  // image transforms on a feature we don't use. Disabling it fully closes that
+  // endpoint with zero functional impact today. To re-enable later (if the art
+  // pipeline ever adopts next/image), do NOT just delete this — re-enable WITH
+  // constraints: set `qualities`, `deviceSizes`/`imageSizes`, `localPatterns`,
+  // `remotePatterns: []`, and `dangerouslyAllowSVG: false`, so the optimizer can't
+  // be driven across unbounded transform combinations.
+  images: { unoptimized: true },
+  // Inline the deploy identity into the CLIENT bundle so browser Sentry events
+  // (instrumentation-client.ts) carry the same environment + release tags as the
+  // server/edge configs. VERCEL_ENV / VERCEL_GIT_COMMIT_SHA aren't NEXT_PUBLIC, so
+  // they must be exposed here; empty string when unset (local/dev).
+  env: {
+    SENTRY_ENVIRONMENT: process.env.VERCEL_ENV ?? process.env.NODE_ENV ?? "",
+    SENTRY_RELEASE: process.env.VERCEL_GIT_COMMIT_SHA ?? "",
+  },
   experimental: {
     // Floor-map uploads (admin) can be larger than the 1 MB default. Allow up to
     // 12 MB so the app-level validator (10 MB cap, lib/image-upload) is what

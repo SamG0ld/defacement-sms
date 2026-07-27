@@ -4,9 +4,11 @@ import { conLabelForYear, conNumberForYear, DC_EPOCH } from "@/lib/con-config";
 import {
   ASSET_CATEGORIES,
   assetsToOrder,
+  canonicalCategory,
   CATEGORY_OPTIONS,
   classifyKind,
   effectiveOnHand,
+  KNOWN_CATEGORIES,
   reconcileAssets,
   signMaterialCountsFromSummary,
   type AssetItem,
@@ -49,6 +51,27 @@ describe("classifyKind", () => {
 
   it("offers the asset categories + Consumable as add/edit options", () => {
     expect(CATEGORY_OPTIONS).toEqual([...ASSET_CATEGORIES, "Consumable"]);
+  });
+});
+
+describe("canonicalCategory", () => {
+  it("knows every offered option plus the seeded Sign Material label", () => {
+    expect(KNOWN_CATEGORIES).toEqual([...CATEGORY_OPTIONS, "Sign Material"]);
+    for (const c of KNOWN_CATEGORIES) expect(canonicalCategory(c)).toBe(c);
+  });
+
+  it("canonicalizes casing and surrounding whitespace", () => {
+    expect(canonicalCategory("easel")).toBe("Easel");
+    expect(canonicalCategory("  EASEL ")).toBe("Easel");
+    expect(canonicalCategory("sign material")).toBe("Sign Material");
+  });
+
+  it("returns null for blank and for genuinely unknown categories", () => {
+    expect(canonicalCategory(null)).toBeNull();
+    expect(canonicalCategory("")).toBeNull();
+    expect(canonicalCategory("   ")).toBeNull();
+    expect(canonicalCategory("Supplies")).toBeNull();
+    expect(canonicalCategory("Easels")).toBeNull(); // plural is a different category
   });
 });
 
@@ -152,6 +175,33 @@ describe("reconcileAssets", () => {
       "Stand",
       "Zebra",
     ]);
+  });
+
+  // #229: grouping used the stored string verbatim, so a row saved as "easel"
+  // (lowercase) classified as an asset but landed in its own bucket that could
+  // never match derivedNeed's "Easel" key — understating the real gap to order.
+  it("merges case-variant categories into the canonical bucket", () => {
+    const recon = reconcileAssets(
+      [
+        item({ id: 1, name: "Tent Pole Easels", category: "Easel", onHand: 100, hasInventoryRow: true }),
+        item({ id: 2, name: "Silver Tripod Easels", category: "easel", onHand: 21, hasInventoryRow: true }),
+      ],
+      { Easel: 131 },
+    );
+    expect(recon).toHaveLength(1);
+    expect(recon[0].category).toBe("Easel");
+    expect(recon[0].have).toBe(121);
+    expect(recon[0].need).toBe(131);
+    expect(recon[0].gap).toBe(10);
+  });
+
+  it("still buckets a genuinely custom category under its stored name", () => {
+    const recon = reconcileAssets(
+      [item({ id: 1, category: "Supplies", onHand: 3, hasInventoryRow: true })],
+      { Easel: 131 },
+    );
+    expect(recon.map((r) => r.category)).toEqual(["Supplies"]);
+    expect(recon[0].need).toBeNull();
   });
 
   it("carry-forward feeds 'have' when the current year has no row", () => {

@@ -19,16 +19,26 @@ import {
 
 import { usePresence } from "@/app/_components/usePresence";
 
-import { DEPLOYMENT_SLOTS, SIGN_STATUSES, statusBadgeClass } from "./_lib";
+import { SIGN_FORMATS } from "@/lib/sign-format";
+
+import {
+  ARCHIVED_STATUS,
+  DEPLOYMENT_SLOTS,
+  SIGN_STATUSES,
+  statusBadgeClass,
+} from "./_lib";
 import {
   bulkAddTag,
   bulkDelete,
   bulkRemoveTag,
+  bulkSetFormat,
   bulkSetHardwareCollected,
+  bulkSetHardwareReturned,
   bulkSetSlot,
   bulkSetStatus,
   bulkSetZone,
 } from "./bulk-actions";
+import { bulkArchive, bulkRestore } from "./remove-actions";
 import { generateSelection } from "./generate-actions";
 
 type SelectionContextValue = {
@@ -194,6 +204,8 @@ export function BulkBar({
   const { selected, allMatching, total, pageIds, setAllMatching, clear } =
     useSelection();
   const count = allMatching ? total : selected.size;
+  // The "Removed" view (?status=archived) swaps Remove for Restore.
+  const onArchivedView = filters.status === ARCHIVED_STATUS;
 
   // Slide in/out instead of snapping: usePresence keeps the bar mounted through
   // its exit animation (hooks must run before the early return below).
@@ -245,6 +257,11 @@ export function BulkBar({
           </button>
         )}
 
+        {/* Status + hardware are meaningless on removed signs — and Set-status
+            would be an un-archive bypass — so they're hidden on the Removed
+            view, where Restore/Delete are the only actions. */}
+        {!onArchivedView && (
+          <>
         {/* Status — any active user */}
         <form action={bulkSetStatus} className="flex items-center gap-1">
           {inputs}
@@ -275,8 +292,43 @@ export function BulkBar({
           </button>
         </form>
 
+        {/* Hardware returned — any active user (strike-time mirror) */}
+        <form action={bulkSetHardwareReturned} className="flex items-center gap-1">
+          {inputs}
+          <input type="hidden" name="returned" value="1" />
+          <button
+            type="submit"
+            className={ACTION_BTN}
+            title="Mark hardware returned for the selection"
+          >
+            Mark returned
+          </button>
+        </form>
+          </>
+        )}
+
         {canManage && (
           <>
+            {/* Restore — un-remove the selected archived signs back to the
+                per-size record. Only on the Removed view (?status=archived). */}
+            {onArchivedView && (
+              <form action={bulkRestore} className="flex items-center gap-1">
+                {inputs}
+                <button
+                  type="submit"
+                  className="btn btn-sm btn-primary"
+                  title="Restore the selected removed signs to the per-size record"
+                >
+                  Restore
+                </button>
+              </form>
+            )}
+
+            {/* Lifecycle bulk edits don't apply to removed signs (and Generate
+                would un-archive them) — hidden on the Removed view, where
+                Restore + Delete are the only actions. */}
+            {!onArchivedView && (
+              <>
             {/* Generate — create a tracked batch from the selection (marks the
                 signs generated + hands off the render-ready list to Figma) */}
             <form action={generateSelection}>
@@ -287,6 +339,25 @@ export function BulkBar({
                 title="Create a generation batch from the selection (marks them generated)"
               >
                 Generate
+              </button>
+            </form>
+
+            {/* Set format — the batch resize. One choice re-derives
+                size/type/category/double-sided across the whole selection. */}
+            <form action={bulkSetFormat} className="flex items-center gap-1">
+              {inputs}
+              <select name="setFormat" defaultValue="" className={FIELD} required>
+                <option value="" disabled>
+                  format…
+                </option>
+                {SIGN_FORMATS.map((f) => (
+                  <option key={f.key} value={f.key}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+              <button type="submit" className={ACTION_BTN}>
+                Set format
               </button>
             </form>
 
@@ -344,6 +415,8 @@ export function BulkBar({
                 Remove
               </button>
             </form>
+              </>
+            )}
 
             {/* Delete */}
             <form
@@ -361,6 +434,36 @@ export function BulkBar({
                 Delete
               </button>
             </form>
+
+            {/* Remove — soft-remove the selection from the per-size record
+                (reversible; pending/generated only). Hidden on the Removed
+                view, where Restore takes its place. */}
+            {!onArchivedView && (
+              <form
+                action={bulkArchive}
+                onSubmit={(e) => {
+                  if (
+                    !confirm(
+                      `Remove ${shownCount} sign(s) from the per-size record?\n\n` +
+                        `Only not-yet-printed signs are removed; already-printed ` +
+                        `signs are skipped. You can restore removed signs from ` +
+                        `the Removed view.`,
+                    )
+                  ) {
+                    e.preventDefault();
+                  }
+                }}
+              >
+                {inputs}
+                <button
+                  type="submit"
+                  className="btn btn-sm border-amber-700 text-amber-300 hover:bg-amber-950"
+                  title="Soft-remove the selection from the per-size record (reversible)"
+                >
+                  Remove
+                </button>
+              </form>
+            )}
           </>
         )}
       </div>

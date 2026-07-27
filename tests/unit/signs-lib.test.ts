@@ -8,6 +8,7 @@ import {
   formatDate,
   formatDateOnly,
   formatDateTime,
+  formatShortDateTime,
   hardwareKind,
   needsHardware,
   pacificTodayUtc,
@@ -15,6 +16,7 @@ import {
   shortZoneLabel,
   stampsForStatus,
   statusBadgeClass,
+  zoneSelectOptions,
 } from "@/app/(app)/signs/_lib";
 
 describe("shortZoneLabel", () => {
@@ -46,6 +48,47 @@ describe("shortZoneLabel", () => {
   it("handles null/undefined", () => {
     expect(shortZoneLabel(null)).toBe("—");
     expect(shortZoneLabel(undefined)).toBe("—");
+  });
+});
+
+describe("zoneSelectOptions", () => {
+  const l1 = { id: 1, zoneCode: "LVCC-L1", zoneName: "Level 1", building: "LVCC West" };
+  const l2 = { id: 2, zoneCode: "LVCC-L2", zoneName: "Level 2", building: "LVCC West" };
+
+  it("puts '— none —' first so an unmatched value can never select a real zone", () => {
+    const opts = zoneSelectOptions([l1, l2], null);
+    expect(opts[0]).toEqual({ value: "", label: "— none —" });
+    expect(opts.slice(1)).toEqual([
+      { value: "1", label: "Level 1" },
+      { value: "2", label: "Level 2" },
+    ]);
+  });
+
+  it("flags an inactive zone in its label", () => {
+    const opts = zoneSelectOptions([l1, { ...l2, isActive: false }], 2);
+    expect(opts).toContainEqual({ value: "2", label: "Level 2 (inactive)" });
+  });
+
+  it("appends a synthetic option when the current zone is missing from the list", () => {
+    // The sign points at a zone the query didn't return (deactivated + not merged
+    // in, or hard-deleted). Without an option the browser falls back to '— none —'
+    // and the next save silently wipes the assignment.
+    const opts = zoneSelectOptions([l1], 99);
+    expect(opts).toHaveLength(3);
+    expect(opts[2]).toEqual({ value: "99", label: "Zone #99 (unavailable)" });
+  });
+
+  it("adds no synthetic option when the current zone is present or unset", () => {
+    expect(zoneSelectOptions([l1], 1)).toHaveLength(2);
+    expect(zoneSelectOptions([l1], null)).toHaveLength(2);
+    expect(zoneSelectOptions([l1], undefined)).toHaveLength(2);
+  });
+
+  it("always yields an option matching a non-null current zone", () => {
+    for (const current of [1, 2, 99]) {
+      const opts = zoneSelectOptions([l1, { ...l2, isActive: false }], current);
+      expect(opts.some((o) => o.value === String(current))).toBe(true);
+    }
   });
 });
 
@@ -92,10 +135,18 @@ describe("buildSignWhere", () => {
     expect(where.tagAssignments).toEqual({ some: { tag: { slug: "village" } } });
   });
 
-  it("ignores invalid status and non-numeric zone", () => {
+  it("defaults an invalid/absent status to hiding archived; ignores non-numeric zone", () => {
     const where = buildSignWhere({ status: "bogus", zone: "abc" });
-    expect(where.status).toBeUndefined();
+    expect(where.status).toEqual({ not: "archived" });
     expect(where.zoneId).toBeUndefined();
+  });
+
+  it("hides archived (soft-removed) signs by default when no status is set", () => {
+    expect(buildSignWhere({}).status).toEqual({ not: "archived" });
+  });
+
+  it("shows ONLY archived on the Removed view (status=archived)", () => {
+    expect(buildSignWhere({ status: "archived" }).status).toBe("archived");
   });
 
   it("trims and caps the search term", () => {
@@ -108,6 +159,33 @@ describe("buildSignWhere", () => {
     const term = (long.OR?.[0] as { signText: { contains: string } }).signText
       .contains;
     expect(term).toHaveLength(200);
+  });
+
+  it("allowlists slot against the deployment-slot vocabulary (#54)", () => {
+    // A real slot is applied...
+    expect(buildSignWhere({ slot: "FRI_PM" }).deploymentSlot).toBe("FRI_PM");
+    // ...an out-of-vocabulary value is dropped, never reaching the query.
+    expect(buildSignWhere({ slot: "WHENEVER" }).deploymentSlot).toBeUndefined();
+    expect(
+      buildSignWhere({ slot: "'; DROP TABLE signs;--" }).deploymentSlot,
+    ).toBeUndefined();
+  });
+
+  it("bounds the free-text type filter to 64 chars (#54)", () => {
+    expect(buildSignWhere({ type: "Banner" }).signType).toBe("Banner");
+    const long = buildSignWhere({ type: "a".repeat(300) });
+    expect(long.signType).toHaveLength(64);
+  });
+
+  it("bounds the tag slug to 64 chars (#54)", () => {
+    expect(buildSignWhere({ tag: "village" }).tagAssignments).toEqual({
+      some: { tag: { slug: "village" } },
+    });
+    const long = buildSignWhere({ tag: "a".repeat(300) });
+    const slug = (
+      long.tagAssignments as { some: { tag: { slug: string } } }
+    ).some.tag.slug;
+    expect(slug).toHaveLength(64);
   });
 });
 
@@ -128,6 +206,30 @@ describe("Vegas-time formatting", () => {
   it("formats a datetime in Pacific time with a PT suffix", () => {
     expect(formatDateTime(d)).toMatch(/Aug 08, 2025.*19:00 PT/);
     expect(formatDateTime(null)).toBe("—");
+  });
+});
+
+describe("formatShortDateTime", () => {
+  it("formats an ISO string in Pacific time with a PT suffix", () => {
+    // 2025-08-09T02:00:00Z == Aug 8 2025 19:00 PDT (UTC-7).
+    expect(formatShortDateTime("2025-08-09T02:00:00.000Z")).toBe(
+      "Aug 8, 19:00 PT",
+    );
+  });
+
+  it("renders the earlier Pacific calendar day for a UTC instant just after midnight", () => {
+    // 2025-08-06T03:15:00Z is already Aug 6 in UTC, but only Aug 5, 20:15 PDT —
+    // the exact date-line case shortTime's viewer-local formatting used to get
+    // wrong depending on the browser's zone.
+    expect(formatShortDateTime("2025-08-06T03:15:00.000Z")).toBe(
+      "Aug 5, 20:15 PT",
+    );
+  });
+
+  it("returns null (not a dash) for missing or invalid input", () => {
+    expect(formatShortDateTime(null)).toBeNull();
+    expect(formatShortDateTime(undefined)).toBeNull();
+    expect(formatShortDateTime("not-a-date")).toBeNull();
   });
 });
 
@@ -246,7 +348,7 @@ describe("hardware derivation", () => {
 describe("buildSignWhere due filter", () => {
   it("sets due=today to an exact date and status != deployed (flat where)", () => {
     const where = buildSignWhere({ due: "today" });
-    expect(where.status).toEqual({ not: "deployed" });
+    expect(where.status).toEqual({ notIn: ["deployed", "archived"] });
     expect(where.deployByDate).toBeInstanceOf(Date);
     expect(where.deployByDate).toEqual(pacificTodayUtc());
     expect(where.AND).toBeUndefined(); // no nested AND fragility
@@ -257,12 +359,12 @@ describe("buildSignWhere due filter", () => {
     const dbd = where.deployByDate as { lt: Date };
     expect(dbd.lt).toBeInstanceOf(Date);
     expect(dbd.lt).toEqual(pacificTodayUtc());
-    expect(where.status).toEqual({ not: "deployed" });
+    expect(where.status).toEqual({ notIn: ["deployed", "archived"] });
   });
 
   it("due deliberately overrides an explicit status (dashboard never sets both)", () => {
     const where = buildSignWhere({ status: "deployed", due: "today" });
-    expect(where.status).toEqual({ not: "deployed" });
+    expect(where.status).toEqual({ notIn: ["deployed", "archived"] });
   });
 
   it("leaves status untouched and unset deployByDate when due is absent", () => {
@@ -292,6 +394,10 @@ describe("statusBadgeClass", () => {
     expect(statusBadgeClass("deployed")).toBe("badge-deployed");
     expect(statusBadgeClass("handed_off")).toBe("badge-handed_off");
     expect(statusBadgeClass("installed")).toBe("badge-installed");
+  });
+
+  it("renders archived (soft-removed) as a muted, struck-through badge", () => {
+    expect(statusBadgeClass("archived")).toContain("line-through");
   });
 });
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/db";
 import { setSignStatus } from "@/lib/deploy/service";
@@ -13,6 +13,9 @@ const actorA: ApiActor = { userId: "uA", email: "a@example.com", role: "admin" }
 const actorB: ApiActor = { userId: "uB", email: "b@example.com", role: "admin" };
 
 let seq = 0;
+beforeEach(() => {
+  seq = 0; // reset so seeded ids never depend on prior tests' run order (#63)
+});
 function seedSign(status = "sorted") {
   seq += 1;
   return prisma.sign.create({

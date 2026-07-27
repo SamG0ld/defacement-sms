@@ -4,7 +4,7 @@
 // is a thin, behavior-preserving wrapper that pins the "deploy-photos" prefix.
 // (The serving route — app/api/native/photos/* — streams the bytes back gated.)
 
-import { putPrivateImage, streamPrivateImage } from "@/lib/blob-image";
+import { deletePrivateImage, putPrivateImage, streamPrivateImage } from "@/lib/blob-image";
 
 const PREFIX = "deploy-photos";
 
@@ -24,4 +24,11 @@ export function streamDeployPhoto(
   ifNoneMatch: string | null,
 ): Promise<Response> {
   return streamPrivateImage(blobPathname, ifNoneMatch);
+}
+
+// Best-effort delete of a stored deploy photo (used to reclaim the previous
+// object when a photo is re-taken/replaced). Failures are swallowed — see
+// deletePrivateImage.
+export function deleteDeployPhoto(blobPathname: string): Promise<void> {
+  return deletePrivateImage(blobPathname);
 }

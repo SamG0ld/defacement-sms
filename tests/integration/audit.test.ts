@@ -28,6 +28,8 @@ import {
   clearAllSigns,
   clearTestSigns,
 } from "@/app/(app)/signs/manage/actions";
+import { setUserRole } from "@/app/(app)/users/actions";
+import { updateSignStatus } from "@/app/(app)/signs/actions";
 
 const admin = {
   user: { id: "admin1", email: "admin@example.com", isActive: true, role: "admin" },
@@ -79,6 +81,64 @@ it("clearTestSigns deletes only test data and audits", async () => {
   expect(
     await prisma.auditLog.count({ where: { action: "signs.clear_test" } }),
   ).toBe(1);
+});
+
+it("setUserRole records the PRIOR role in the audit detail", async () => {
+  // beforeEach truncates the domain tables but preserves `users` (seeded
+  // reference data), so clear any leftover from a prior run before recreating.
+  await prisma.user.deleteMany({ where: { email: "vol@example.com" } });
+  const user = await prisma.user.create({
+    data: { email: "vol@example.com", role: "volunteer" },
+  });
+
+  const fd = new FormData();
+  fd.set("role", "lead");
+  await setUserRole(user.id, fd);
+
+  const rows = await prisma.auditLog.findMany({ where: { action: "user.role" } });
+  expect(rows).toHaveLength(1);
+  // The detail must reconstruct the transition on its own — recording only the
+  // NEW role would erase the escalation timeline (#82).
+  expect(rows[0].detail).toContain("volunteer");
+  expect(rows[0].detail).toContain("lead");
+  expect(rows[0].detail).toMatch(/from volunteer to lead/);
+});
+
+it("updateSignStatus audits a DENIED status change", async () => {
+  // A volunteer attempting a backward move is rejected by decideStatusChange;
+  // the denial must still leave an audit trace so a privilege probe is visible.
+  const volunteer = {
+    user: {
+      id: "vol1",
+      email: "vol1@example.com",
+      isActive: true,
+      role: "volunteer",
+    },
+  };
+  vi.mocked(auth).mockResolvedValue(volunteer as never);
+
+  const sign = await prisma.sign.create({
+    data: { ...base, itemId: "D1", status: "printed" },
+  });
+
+  const fd = new FormData();
+  fd.set("status", "pending"); // backward: printed -> pending
+
+  const url = await captureRedirect(updateSignStatus(sign.id, fd));
+  expect(url).toContain("error=");
+
+  // Sign status is unchanged...
+  const after = await prisma.sign.findUnique({ where: { id: sign.id } });
+  expect(after?.status).toBe("printed");
+
+  // ...but the denied attempt is recorded.
+  const rows = await prisma.auditLog.findMany({
+    where: { action: "sign.status_denied" },
+  });
+  expect(rows).toHaveLength(1);
+  expect(rows[0].actorId).toBe("vol1");
+  expect(rows[0].detail).toContain(`sign #${sign.id}`);
+  expect(rows[0].detail).toMatch(/printed → pending/);
 });
 
 it("clearAllSigns requires the exact confirm phrase", async () => {

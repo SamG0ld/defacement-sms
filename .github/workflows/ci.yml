@@ -17,17 +17,42 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
-      # npm install (not `npm ci`): the lockfile is generated on Windows and omits
-      # Linux-only optional deps (@emnapi/* WASM fallbacks), which `npm ci` rejects.
-      # `npm install` resolves per-platform — same as the Docker build.
-      - run: npm install
+      # Deterministic install from the lockfile (regenerated on Node 22 so every
+      # platform's optional deps are recorded).
+      - run: npm ci
       - run: npx prisma generate
       - run: npm run lint
       - run: npm run typecheck
       - run: npx prisma validate
       - run: npm test
+
+  build:
+    name: Production build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Deterministic install from the lockfile (regenerated on Node 22 so every
+      # platform's optional deps are recorded).
+      - run: npm ci
+      - run: npx prisma generate
+      # `next build` catches a class of errors tsc/lint/unit don't (RSC boundary
+      # violations, bad route configs, page-data-collection failures) — the pre-prod
+      # build check the Vercel preview used to provide before previews were limited
+      # to production. Placeholder env mirrors the Dockerfile (build stage): lib/db.ts
+      # constructs Prisma at import and throws without DATABASE_URL, which breaks
+      # page-data collection. The URL is intentionally unreachable — `next build`
+      # never connects, only needs it set. Server env is NOT inlined into the bundle
+      # (only NEXT_PUBLIC_*), so these throwaway values never reach any runtime.
+      - run: npm run build
+        env:
+          DATABASE_URL: "postgresql://build:build@localhost:5432/build"
+          AUTH_SECRET: "build-only-placeholder-not-used-at-runtime"
 
   integration:
     name: Integration tests (Postgres)
@@ -54,12 +79,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
-      # npm install (not `npm ci`): the lockfile is generated on Windows and omits
-      # Linux-only optional deps (@emnapi/* WASM fallbacks), which `npm ci` rejects.
-      # `npm install` resolves per-platform — same as the Docker build.
-      - run: npm install
+      # Deterministic install from the lockfile (regenerated on Node 22 so every
+      # platform's optional deps are recorded).
+      - run: npm ci
       - run: npx prisma generate
       - run: npm run test:integration
 
@@ -75,12 +99,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
-      # npm install (not `npm ci`): the lockfile is generated on Windows and omits
-      # Linux-only optional deps (@emnapi/* WASM fallbacks), which `npm ci` rejects.
-      # `npm install` resolves per-platform — same as the Docker build.
-      - run: npm install
+      # Deterministic install from the lockfile (regenerated on Node 22 so every
+      # platform's optional deps are recorded).
+      - run: npm ci
       - run: npx prisma generate
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
