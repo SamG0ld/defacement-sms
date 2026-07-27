@@ -1,6 +1,6 @@
 // Sign-data health rules. Pure + dependency-light (only the room-code normalizer) so
 // it unit-tests in isolation and runs the same way over a CSV export or a live-DB
-// snapshot (scripts/signs-audit adapts either into AuditSign[]). Each rule surfaces a
+// snapshot (a caller adapts either into AuditSign[]). Each rule surfaces a
 // class of problem a human previously only caught by eyeballing an export: stale
 // placeholders, the same space duplicated under variant room-code spellings, a name
 // fill-dropped across booths, unconfirmed rows, and un-renderable rows.

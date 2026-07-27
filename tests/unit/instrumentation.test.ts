@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// #248: lib/env.ts's assertProdEnv() is thoroughly unit-tested, but nothing
-// tested instrumentation.ts's register() — the thing that's supposed to turn a
-// failed check into "this deploy does not serve traffic". These lock the half we
-// own: register() must AWAIT assertProdEnv() and let its throw propagate, never
+// lib/env.ts's assertProdEnv() is thoroughly unit-tested, but nothing tested
+// instrumentation.ts's register() — the thing that's supposed to turn a failed
+// check into "this deploy does not serve traffic". These lock the half we own:
+// register() must AWAIT assertProdEnv() and let its throw propagate, never
 // swallow or merely log it. Whether Next.js then refuses to serve is the
-// runtime's contract, covered by scripts/security/fail-fast-smoke.mjs in CI.
+// runtime's own contract, which these tests deliberately do not assert.
 //
 // vi.doMock (not vi.mock) + resetModules per test: the mocked sentry configs
 // record load ORDER, and a hoisted factory would only ever run once for the

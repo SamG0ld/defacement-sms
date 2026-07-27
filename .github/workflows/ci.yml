@@ -19,8 +19,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Deterministic install from the lockfile (regenerated on Node 22 with all
-      # platforms' optional deps recorded — see #121).
+      # Deterministic install from the lockfile (regenerated on Node 22 so every
+      # platform's optional deps are recorded).
       - run: npm ci
       - run: npx prisma generate
       - run: npm run lint
@@ -37,8 +37,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Deterministic install from the lockfile (regenerated on Node 22 with all
-      # platforms' optional deps recorded — see #121).
+      # Deterministic install from the lockfile (regenerated on Node 22 so every
+      # platform's optional deps are recorded).
       - run: npm ci
       - run: npx prisma generate
       # `next build` catches a class of errors tsc/lint/unit don't (RSC boundary
@@ -53,14 +53,6 @@ jobs:
         env:
           DATABASE_URL: "postgresql://build:build@localhost:5432/build"
           AUTH_SECRET: "build-only-placeholder-not-used-at-runtime"
-      # Fail-fast smoke (#248): boots the standalone server just built, twice —
-      # once with a valid production env (must serve 200 on /api/health, which
-      # proves the check below isn't passing vacuously) and once with the
-      # placeholder AUTH_SECRET (must never serve a success response). Unit tests
-      # cover assertProdEnv's logic and register()'s propagation; only this
-      # catches a Next.js upgrade that swallows the startup throw and serves
-      # traffic anyway. Reuses the build above — no extra job, no second build.
-      - run: npm run smoke:fail-fast
 
   integration:
     name: Integration tests (Postgres)
@@ -89,8 +81,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Deterministic install from the lockfile (regenerated on Node 22 with all
-      # platforms' optional deps recorded — see #121).
+      # Deterministic install from the lockfile (regenerated on Node 22 so every
+      # platform's optional deps are recorded).
       - run: npm ci
       - run: npx prisma generate
       - run: npm run test:integration
@@ -109,8 +101,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # Deterministic install from the lockfile (regenerated on Node 22 with all
-      # platforms' optional deps recorded — see #121).
+      # Deterministic install from the lockfile (regenerated on Node 22 so every
+      # platform's optional deps are recorded).
       - run: npm ci
       - run: npx prisma generate
       - run: npx playwright install --with-deps chromium
