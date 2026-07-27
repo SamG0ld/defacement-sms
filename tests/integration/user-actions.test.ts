@@ -37,9 +37,18 @@ import {
   setUserRole,
 } from "@/app/(app)/users/actions";
 
-let adminId: string;
+// Undefined between tests on purpose: afterEach deletes the admin row, so if the
+// upsert below ever throws, a plain `let adminId: string` would leave the PREVIOUS
+// (now-deleted) id in place and the next test would fail with a confusing FK error
+// instead of the real cause. Read it through requireAdminId() (#63).
+let adminId: string | undefined;
+const requireAdminId = (): string => {
+  if (adminId === undefined) throw new Error("adminId unset — the beforeEach admin upsert failed");
+  return adminId;
+};
 
 beforeEach(async () => {
+  adminId = undefined;
   // invitedById is a real FK, so the acting admin must be a real row.
   const admin = await prisma.user.upsert({
     where: { email: "test-admin@example.com" },
@@ -88,7 +97,7 @@ describe("addUser", () => {
 
     const u = await prisma.user.findUnique({ where: { email: "test-new@example.com" } });
     expect(u?.role).toBe("volunteer");
-    expect(u?.invitedById).toBe(adminId);
+    expect(u?.invitedById).toBe(requireAdminId());
 
     const audit = await prisma.auditLog.findFirst({ where: { action: "user.add" } });
     expect(audit?.detail).toContain("test-new@example.com");
@@ -118,6 +127,16 @@ describe("setUserRole", () => {
     expect((await prisma.user.findUnique({ where: { id: u.id } }))?.role).toBe("lead");
     const audit = await prisma.auditLog.findFirst({ where: { action: "user.role" } });
     expect(audit?.detail).toContain("lead");
+  });
+
+  it("records BOTH the old and new role so a privilege change is reconstructable (#82)", async () => {
+    const u = await prisma.user.create({ data: { email: "test-esc@example.com", role: "volunteer" } });
+    await setUserRole(u.id, form({ role: "admin" }));
+    const audit = await prisma.auditLog.findFirst({ where: { action: "user.role" } });
+    // detail reads "Changed test-esc@example.com from volunteer to admin"
+    expect(audit?.detail).toContain("from volunteer");
+    expect(audit?.detail).toContain("to admin");
+    expect(audit?.detail).toContain("test-esc@example.com");
   });
 
   it("bumps tokenVersion so a demotion revokes the live session", async () => {
@@ -154,9 +173,10 @@ describe("removeUser", () => {
   });
 
   it("refuses to remove your own account", async () => {
-    const url = await captureRedirect(removeUser(adminId));
+    const self = requireAdminId();
+    const url = await captureRedirect(removeUser(self));
     expect(url).toMatch(/your own account/i);
-    expect(await prisma.user.findUnique({ where: { id: adminId } })).not.toBeNull();
+    expect(await prisma.user.findUnique({ where: { id: self } })).not.toBeNull();
   });
 
   it("nulls invitees' invitedById and leaves the audit trail intact", async () => {

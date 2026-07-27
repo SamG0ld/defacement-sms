@@ -35,6 +35,51 @@ describe("parseSignListCsv", () => {
     });
   });
 
+  it("exposes the Room column verbatim when present; '' when absent or no column", () => {
+    const header = ["Item ID", "Sign Text", "Type", "Size", "Zone", "Room"];
+    const { items } = parseSignListCsv(
+      csv([
+        header,
+        ["W320", "Aerospace Village", "22x28", "22x28", "LVCC-H1", "W320"],
+        ["M-7", "No Room Here", "22x28", "22x28", "", ""], // blank Room cell
+      ]),
+    );
+    expect(items[0].room).toBe("W320");
+    expect(items[1].room).toBe(""); // blank cell -> ""
+
+    // A DC33-era export with no Room column at all -> room defaults to "".
+    const { items: legacy } = parseSignListCsv(
+      csv([HEADER, ["M-1", "Poster", "22x28", "22x28", ""]]),
+    );
+    expect(legacy[0].room).toBe("");
+  });
+
+  it("exposes back-face text uppercased when the Back Text column is present; '' otherwise", () => {
+    const header = [
+      "Item ID",
+      "Sign Text",
+      "Type",
+      "Size",
+      "Double-Sided",
+      "Back Text",
+    ];
+    const { items } = parseSignListCsv(
+      csv([
+        header,
+        ["W204", "Workshop A", "", "4'x8' Double", "Yes", "Workshop B"],
+        ["W205", "Single Face", "", "4'x8' Single", "No", ""], // blank back text
+      ]),
+    );
+    expect(items[0].backText).toBe("WORKSHOP B"); // uppercased like renderText
+    expect(items[1].backText).toBe("");
+
+    // Legacy export with no Back Text column at all -> "".
+    const { items: legacy } = parseSignListCsv(
+      csv([HEADER, ["M-1", "Poster", "22x28", "22x28", ""]]),
+    );
+    expect(legacy[0].backText).toBe("");
+  });
+
   it("maps each Size to its template/canvas bucket via signTypeFromSize", () => {
     const { items } = parseSignListCsv(
       csv([
@@ -71,6 +116,48 @@ describe("parseSignListCsv", () => {
     expect(groups.map((g) => g.template)).toEqual(['22"x28"', "Meterboard (4'x8')"]);
     expect(groups[0].items.map((i) => i.renderText)).toEqual(["POSTER A", "POSTER B"]);
     expect(groups[1].items).toHaveLength(1);
+  });
+
+  it("splits a 4'x8' Double into its own generation group (two print faces)", () => {
+    const header = ["Item ID", "Sign Text", "Type", "Size", "Double-Sided"];
+    const { groups } = parseSignListCsv(
+      csv([
+        header,
+        ["M-1", "Track 1", "", "4'x8' Single", "No"],
+        ["M-2", "Track 2", "", "4'x8' Double", "Yes"],
+        ["M-3", "Track 3", "", "4'x8' Single", "No"],
+      ]),
+    );
+    // Same template ("Meterboard (4'x8')") but single vs double are distinct groups,
+    // so a Double is never folded into the Single meterboard batch.
+    expect(
+      groups.map((g) => [g.template, g.doubleSided, g.items.length]),
+    ).toEqual([
+      ["Meterboard (4'x8')", false, 2],
+      ["Meterboard (4'x8')", true, 1],
+    ]);
+  });
+
+  it("derives doubleSided (explicit column wins, else the size heuristic)", () => {
+    // Explicit column authoritative.
+    const withCol = parseSignListCsv(
+      csv([
+        ["Item ID", "Sign Text", "Type", "Size", "Double-Sided"],
+        ["M-1", "A", "", "22x28", "Yes"], // non-double size, explicit Yes
+        ["M-2", "B", "", "4'x8' Double", "No"], // explicit No beats the size
+      ]),
+    );
+    expect(withCol.items.map((i) => i.doubleSided)).toEqual([true, false]);
+
+    // No column → fall back to the size string.
+    const noCol = parseSignListCsv(
+      csv([
+        ["Item ID", "Sign Text", "Type", "Size"],
+        ["M-1", "A", "", "4'x8' Double"],
+        ["M-2", "B", "", "4'x8' Single"],
+      ]),
+    );
+    expect(noCol.items.map((i) => i.doubleSided)).toEqual([true, false]);
   });
 
   it("skips rows with blank Sign Text (recording why) and fully-blank rows", () => {

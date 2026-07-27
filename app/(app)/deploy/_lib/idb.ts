@@ -64,6 +64,19 @@ function getDb(): Promise<IDBDatabase> {
   return dbPromise;
 }
 
+// A connection the browser is tearing down doesn't always fail loudly at
+// transaction() time — on iOS Safari it can accept the call and then fire
+// onerror/onabort asynchronously. These are the names that mean "the CONNECTION
+// is stale", as opposed to a genuine data error worth surfacing. (#205)
+export function isStaleConnectionError(err: unknown): boolean {
+  const name = (err as { name?: string } | null | undefined)?.name;
+  return (
+    name === "InvalidStateError" ||
+    name === "TransactionInactiveError" ||
+    name === "AbortError"
+  );
+}
+
 function runTx<T>(
   db: IDBDatabase,
   store: string,
@@ -80,7 +93,15 @@ function runTx<T>(
       result = req.result;
     };
     t.oncomplete = () => resolve(result);
-    t.onerror = () => reject(t.error);
+    // A transaction the browser tears down reports NO error — `t.error` is null.
+    // Rejecting with that raw null gave callers nothing to classify (and the
+    // abort event wasn't handled at all, so an abort could leave this promise
+    // pending forever). Always reject with a named error so tx() can tell a stale
+    // connection from a genuine data fault. (#205)
+    const fail = () =>
+      reject(t.error ?? new DOMException("transaction aborted", "AbortError"));
+    t.onerror = fail;
+    t.onabort = fail;
   });
 }
 
@@ -89,15 +110,29 @@ function tx<T>(
   mode: IDBTransactionMode,
   run: (s: IDBObjectStore) => IDBRequest<T>,
 ): Promise<T> {
+  const retryOnce = (err: unknown): Promise<T> => {
+    // Only a connection-state failure is worth retrying; a genuine data error
+    // (constraint, quota) would fail identically on a fresh connection and must
+    // surface. Bounded to ONE attempt so a real fault can't loop.
+    if (!isStaleConnectionError(err)) throw err;
+    dbPromise = null;
+    return getDb().then((fresh) => runTx(fresh, store, mode, run));
+  };
   return getDb().then((db) => {
+    let running: Promise<T>;
     try {
-      return runTx(db, store, mode, run);
-    } catch {
-      // transaction() throws synchronously on a connection the browser already
-      // closed — re-open once and retry.
-      dbPromise = null;
-      return getDb().then((fresh) => runTx(fresh, store, mode, run));
+      running = runTx(db, store, mode, run);
+    } catch (err) {
+      // transaction() throws SYNCHRONOUSLY on a connection the browser already
+      // closed.
+      return retryOnce(err);
     }
+    // …but it can also accept the call and abort ASYNCHRONOUSLY (iOS Safari
+    // after the app was backgrounded — the exact scenario the singleton-close
+    // handling exists for). Callers treat any rejection as "no durable queue",
+    // so an unretried stale-connection abort surfaces as "Couldn't save…" and
+    // drops an offline claim/deploy the volunteer thinks was queued. (#205)
+    return running.catch(retryOnce);
   });
 }
 

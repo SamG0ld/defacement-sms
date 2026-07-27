@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { reconcile } from "@/app/(app)/signs/_sync/overlay";
+import { reconcile, SYNCED_TTL_MS } from "@/app/(app)/signs/_sync/overlay";
 import type {
   StatusOutboxEntry,
   StatusOverlay,
@@ -40,16 +40,20 @@ describe("reconcile — overlay from outbox + previous overlay", () => {
     const prev: StatusOverlay = {
       5: { status: "deployed", indicator: "queued" },
     };
-    const out = reconcile(prev, []);
-    expect(out[5]).toEqual({ status: "deployed", indicator: "synced" });
+    const out = reconcile(prev, [], 1_000);
+    expect(out[5]).toEqual({
+      status: "deployed",
+      indicator: "synced",
+      syncedAt: 1_000,
+    });
   });
 
-  it("a synced sign stays synced across cycles (sticky until reload)", () => {
+  it("a synced sign stays synced across cycles (sticky within the TTL)", () => {
     const prev: StatusOverlay = {
-      5: { status: "deployed", indicator: "synced" },
+      5: { status: "deployed", indicator: "synced", syncedAt: 1_000 },
     };
-    const out = reconcile(prev, []);
-    expect(out[5]).toEqual({ status: "deployed", indicator: "synced" });
+    const out = reconcile(prev, [], 1_000 + SYNCED_TTL_MS - 1);
+    expect(out[5]).toMatchObject({ status: "deployed", indicator: "synced" });
   });
 
   it("a discarded failed entry (gone from outbox) reverts to server truth", () => {
@@ -66,5 +70,42 @@ describe("reconcile — overlay from outbox + previous overlay", () => {
     };
     const out = reconcile(prev, [entry({ signId: 5, status: "sorted" })]);
     expect(out[5]).toEqual({ status: "sorted", indicator: "queued" });
+  });
+});
+
+// The overlay lives in provider state, which router.refresh does NOT unmount, so
+// an unbounded sticky "synced" pins this device's own old status on top of server
+// truth for the life of the mount — masking a later change by another crew or a
+// lead until a full reload. (#203)
+describe("reconcile — the sticky synced badge expires (#203)", () => {
+  it("drops a synced overlay once the TTL has elapsed, revealing server truth", () => {
+    const prev: StatusOverlay = {
+      5: { status: "deployed", indicator: "synced", syncedAt: 1_000 },
+    };
+    const out = reconcile(prev, [], 1_000 + SYNCED_TTL_MS);
+    expect(out[5]).toBeUndefined();
+  });
+
+  it("stamps syncedAt when an entry FIRST becomes synced, and doesn't refresh it", () => {
+    // A drained entry becomes synced at t=1000…
+    const first = reconcile({ 5: { status: "deployed", indicator: "queued" } }, [], 1_000);
+    expect(first[5].syncedAt).toBe(1_000);
+    // …and later reconciles must NOT restamp it, or the TTL would never expire
+    // (reconcile runs on every 20s tick).
+    const later = reconcile(first, [], 1_000 + SYNCED_TTL_MS - 1);
+    expect(later[5].syncedAt).toBe(1_000);
+    // One tick past the deadline it's gone.
+    expect(reconcile(later, [], 1_000 + SYNCED_TTL_MS)[5]).toBeUndefined();
+  });
+
+  it("expiry does not disturb queued or failed entries", () => {
+    const prev: StatusOverlay = {
+      5: { status: "deployed", indicator: "synced", syncedAt: 0 },
+      6: { status: "deployed", indicator: "failed" },
+    };
+    const out = reconcile(prev, [entry({ signId: 7, status: "sorted" })], SYNCED_TTL_MS);
+    expect(out[5]).toBeUndefined(); // expired
+    expect(out[6]).toBeUndefined(); // failed + gone from outbox = discarded
+    expect(out[7]).toEqual({ status: "sorted", indicator: "queued" });
   });
 });

@@ -22,6 +22,7 @@ export function MapPinPicker({
   hiddenFields = {},
   saveLabel = "Save pin",
   currentMarker = null,
+  imageWidth,
 }: {
   src: string;
   label: string;
@@ -33,6 +34,10 @@ export function MapPinPicker({
   // (e.g. for a room-placed sign whose pin isn't an editable override). Lets one
   // map show current placement AND act as the editor without a second map.
   currentMarker?: { x: number; y: number } | null;
+  // The floor image's native width — lets ZoomCanvas allow zooming all the way to
+  // native pixels for precise pin placement on a dense, high-res map. Omitted →
+  // ZoomCanvas default.
+  imageWidth?: number | null;
 }) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(initial);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -61,7 +66,7 @@ export function MapPinPicker({
 
   return (
     <div className="space-y-3">
-      <ZoomCanvas doubleClickZoom={false}>
+      <ZoomCanvas doubleClickZoom={false} imageWidth={imageWidth}>
         <div
           className="relative w-full cursor-crosshair"
           onPointerDown={onPointerDown}

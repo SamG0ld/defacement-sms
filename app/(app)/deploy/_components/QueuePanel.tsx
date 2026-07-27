@@ -23,6 +23,25 @@ function describe(entry: OutboxEntry): string {
       const p = entry.payload as { signId: number };
       return `Photo for sign #${p.signId}`;
     }
+    default: {
+      // Exhaustiveness guard (#237). A new OutboxKind added without a case here
+      // used to fall through and return undefined, which React renders as a blank
+      // line — a crew would see an entry in the queue with no idea what it was, on
+      // the one screen they rely on to know what hasn't synced. The `never`
+      // assignment makes that a BUILD failure instead. It narrows on `entry.kind`,
+      // not `entry`: OutboxEntry isn't a discriminated union, its payload is a
+      // plain union.
+      //
+      // Deliberately returns rather than throws. `describe()` runs during render
+      // inside the outbox .map(), and the nearest boundary is the root
+      // app/error.tsx — so a throw here would replace the ENTIRE field tool with an
+      // error card, and re-expanding the queue would just crash it again. The
+      // outbox is durable across sessions AND across deploys, so a device holding
+      // an entry written by a different build is a real mid-con scenario, not a
+      // hypothetical. A labelled, still-discardable row is the safe failure.
+      const unhandled: never = entry.kind;
+      return `Queued action (${String(unhandled)})`;
+    }
   }
 }
 

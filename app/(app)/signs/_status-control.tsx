@@ -16,6 +16,7 @@
 import { useState } from "react";
 
 import type { SignStatus } from "@/app/generated/prisma/client";
+import type { SignStatusValue } from "@/lib/deploy/contract";
 
 import { updateSignStatus } from "./actions";
 import { SIGN_STATUSES, statusBadgeClass, statusLabel } from "./_lib";
@@ -123,7 +124,9 @@ export function RowStatusControl({
               if (sync) {
                 e.preventDefault();
                 const form = e.currentTarget.form;
-                sync.enqueue(signId, armed).then(
+                // armed is picked from the SIGN_STATUSES pills (lifecycle only,
+                // never `archived`), so it's always a syncable status value.
+                sync.enqueue(signId, armed as SignStatusValue).then(
                   () => {
                     setArmed(null);
                     setOpen(false);

@@ -1,15 +1,19 @@
 import Link from "next/link";
 
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/rbac";
+import { requirePageRole } from "@/lib/page-guards";
 
 import { formatDateTime } from "../_lib";
+import { DeleteBatchButton } from "./_DeleteBatchButton";
+
+type Props = { searchParams: Promise<{ error?: string }> };
 
 // Generation index (lead+): the sign-generation batches. Each batch is a set of
 // signs handed off to Figma — download its render-ready CSV, generate in Figma,
 // then paste the Figma file link back in on the batch page.
-export default async function GenerationIndexPage() {
-  await requireRole("lead");
+export default async function GenerationIndexPage({ searchParams }: Props) {
+  await requirePageRole("lead", "/signs");
+  const { error } = await searchParams;
 
   const batches = await prisma.generationBatch.findMany({
     orderBy: { createdAt: "desc" },
@@ -29,19 +33,23 @@ export default async function GenerationIndexPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold">Generation</h1>
-          <p className="text-sm text-zinc-400">
-            Sign-generation batches. Each batch is a set of signs handed off to
-            Figma; download its render-ready CSV, then paste the Figma file link
-            back in.
-          </p>
-        </div>
-        <Link href="/signs" className="shrink-0 text-sm text-accent hover:opacity-80">
-          ← Signs
+      <div className="space-y-1">
+        <Link href="/signs" className="text-xs text-zinc-500 hover:text-zinc-300">
+          ← All signs
         </Link>
+        <h1 className="text-2xl font-semibold">Generation</h1>
+        <p className="text-sm text-zinc-400">
+          Sign-generation batches. Each batch is a set of signs handed off to
+          Figma; download its render-ready CSV, then paste the Figma file link
+          back in.
+        </p>
       </div>
+
+      {error && (
+        <p className="rounded border border-red-900 bg-red-950/40 px-3 py-2 text-sm text-red-300">
+          {error.slice(0, 300)}
+        </p>
+      )}
 
       {batches.length === 0 ? (
         <p className="max-w-2xl text-sm text-zinc-500">
@@ -64,6 +72,7 @@ export default async function GenerationIndexPage() {
                 <th className="px-3 py-2">By</th>
                 <th className="px-3 py-2">Pipeline</th>
                 <th className="px-3 py-2">Figma</th>
+                <th className="px-3 py-2 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -104,6 +113,14 @@ export default async function GenerationIndexPage() {
                     ) : (
                       <span className="text-zinc-600">—</span>
                     )}
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="flex justify-end">
+                      <DeleteBatchButton
+                        batchId={b.id}
+                        signCount={b._count.signs}
+                      />
+                    </div>
                   </td>
                 </tr>
               ))}

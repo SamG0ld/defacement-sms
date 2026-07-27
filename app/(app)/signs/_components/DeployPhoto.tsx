@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 
 import { signDeployPhotoSrc } from "@/lib/deploy/photo";
 
+import { DeployImg } from "../../_components/DeployImg";
 import { MapPin } from "../../map/_components/MapPin";
 
 // Full-screen lightbox for a sign's deploy photo, served through the auth-gated
@@ -53,12 +54,12 @@ function PhotoLightbox({
       >
         Close ✕
       </button>
-      {/* eslint-disable-next-line @next/next/no-img-element -- auth-gated streamed blob, intrinsic size unknown */}
-      <img
+      <DeployImg
         src={signDeployPhotoSrc(signId)}
         alt="Deployed sign"
         onClick={(e) => e.stopPropagation()}
         className="max-h-full max-w-full rounded object-contain shadow-2xl"
+        fallbackClassName="rounded bg-zinc-900 px-6 py-4 text-sm text-zinc-400"
       />
     </div>,
     document.body,
@@ -78,12 +79,12 @@ export function DeployPhotoThumb({ signId }: { signId: number }) {
       >
         {/* alt="" — the wrapping button's aria-label is the actionable label, so
             the thumbnail is presentational and shouldn't be double-announced. */}
-        {/* eslint-disable-next-line @next/next/no-img-element -- auth-gated streamed blob */}
-        <img
+        <DeployImg
           src={signDeployPhotoSrc(signId)}
           alt=""
           loading="lazy"
           className="h-28 w-auto select-none object-cover"
+          fallbackClassName="flex h-28 items-center justify-center bg-zinc-900 px-3 text-xs text-zinc-500"
         />
       </button>
       {open && <PhotoLightbox signId={signId} onClose={() => setOpen(false)} />}

@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/rbac";
+import { requirePageRole } from "@/lib/page-guards";
 
 import { PagerLink } from "../signs/_components/PagerLink";
 import { AuditTable, type AuditRow } from "./_components/AuditTable";
@@ -25,7 +25,7 @@ type ActivityPageProps = {
 export default async function ActivityPage({ searchParams }: ActivityPageProps) {
   // Lead+ can see the activity log (the (app) layout already guarantees an
   // authenticated active session).
-  const session = await requireRole("lead");
+  const session = await requirePageRole("lead");
   const isAdmin = session.user.role === "admin";
 
   const sp = await searchParams;
@@ -39,8 +39,9 @@ export default async function ActivityPage({ searchParams }: ActivityPageProps) 
           : "audit";
 
   // The Logins tab exposes coarse location + device (PII) — admin-only, even
-  // though the rest of /activity is lead+.
-  if (view === "logins") await requireRole("admin");
+  // though the rest of /activity is lead+. A lead landing here is bounced back to
+  // the default activity view rather than shown an error.
+  if (view === "logins") await requirePageRole("admin", "/activity");
   const page = Math.max(1, Number.parseInt(sp.page ?? "1", 10) || 1);
   const action =
     typeof sp.action === "string" && sp.action ? sp.action : undefined;
@@ -156,6 +157,7 @@ export default async function ActivityPage({ searchParams }: ActivityPageProps) 
         take: PAGE_SIZE,
         select: {
           id: true,
+          changeType: true,
           oldStatus: true,
           newStatus: true,
           changedBy: true,
@@ -190,13 +192,13 @@ export default async function ActivityPage({ searchParams }: ActivityPageProps) 
           Activity log
         </h1>
         <p className="mt-1 text-sm text-zinc-400">
-          Who did what — admin events and sign status changes. Newest first.
+          Who did what — admin events and sign status/format changes. Newest first.
         </p>
       </div>
 
       <nav className="chiprow" aria-label="Activity view">
         {tab("audit", "Admin events")}
-        {tab("status", "Status changes")}
+        {tab("status", "Change history")}
         {tab("deploy", "Deploys")}
         {isAdmin && tab("logins", "Logins")}
       </nav>

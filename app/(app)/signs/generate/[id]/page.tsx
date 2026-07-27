@@ -2,17 +2,15 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/rbac";
+import { requirePageRole } from "@/lib/page-guards";
 
 import { formatDateTime, statusBadgeClass } from "../../_lib";
-import {
-  importBatchPreviews,
-  updateBatchFigmaUrl,
-} from "../../generate-actions";
+import { updateBatchFigmaUrl } from "../../generate-actions";
+import { ImportPreviews } from "./_ImportPreviews";
 
-// importBatchPreviews (a Server Action POSTed to this route segment) does one
-// Figma image download per sign — a 150+ sign batch can run well past the default
-// Vercel function limit, leaving a partial import. Lift the cap for this segment.
+// The preview import is a Server Action POSTed to this route segment. It now runs in
+// client-driven slices (see _ImportPreviews), so no single request is long — but keep a
+// generous cap as a safety margin for the largest slice.
 export const maxDuration = 300;
 
 type Props = {
@@ -24,7 +22,7 @@ type Props = {
 // render-ready handoff CSV (the Figma render input), capture the Figma
 // file URL after the render, and see which signs the batch covers.
 export default async function BatchDetailPage({ params, searchParams }: Props) {
-  await requireRole("lead");
+  await requirePageRole("lead", "/signs");
 
   const id = Number((await params).id);
   if (!Number.isInteger(id) || id <= 0) notFound();
@@ -42,7 +40,10 @@ export default async function BatchDetailPage({ params, searchParams }: Props) {
       createdById: true,
       createdAt: true,
       signs: {
-        orderBy: [{ deploymentPriority: "asc" }, { itemId: "asc" }],
+        // By size, then Item ID (the deploymentPriority sort was a uniform
+        // no-op). New batches are single-format; size ordering keeps a legacy
+        // mixed-size batch grouped by size.
+        orderBy: [{ size: "asc" }, { itemId: "asc" }],
         select: {
           id: true,
           itemId: true,
@@ -137,20 +138,9 @@ export default async function BatchDetailPage({ params, searchParams }: Props) {
         </form>
 
         {/* Importer A: pull the rendered images from Figma onto the signs. Matches
-            nodes to signs by Item-ID name prefix; needs the Figma link saved. */}
-        <form
-          action={importBatchPreviews.bind(null, batch.id)}
-          className="flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-3"
-        >
-          <button type="submit" className={BTN} disabled={!batch.figmaUrl}>
-            ⤓ Pull previews from Figma
-          </button>
-          <span className="text-xs text-zinc-500">
-            {batch.figmaUrl
-              ? "Imports each sign's rendered image by Item-ID match (nodes named “M-001 - …”)."
-              : "Save the Figma file link first."}
-          </span>
-        </form>
+            nodes to signs by Item-ID name prefix; needs the Figma link saved. Runs as
+            client-driven slices with a live progress bar (see _ImportPreviews). */}
+        <ImportPreviews batchId={batch.id} hasFigmaUrl={!!batch.figmaUrl} />
       </div>
 
       {/* Signs in the batch */}

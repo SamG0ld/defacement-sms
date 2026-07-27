@@ -6,8 +6,10 @@ import {
 } from "@/lib/deploy/api-session";
 import { validateImageUpload, MAX_IMAGE_BYTES } from "@/lib/image-upload";
 import { uploadDeployPhoto, streamDeployPhoto } from "@/lib/deploy/blob";
+import { deletePrivateImage } from "@/lib/blob-image";
 import { attachDeployPhoto } from "@/lib/deploy/service";
 import { prisma } from "@/lib/db";
+import { logError } from "@/lib/log";
 import { hasRole } from "@/lib/rbac";
 
 // Blob upload + DB writes — bound the worst case.
@@ -71,9 +73,30 @@ export async function POST(
     }
 
     const pathname = await uploadDeployPhoto(clientId, bytes, result.image.contentType);
-    const signId = await attachDeployPhoto(clientId, pathname);
-    if (signId === null) throw new ApiError(404, "unknown deploy event");
-    return { clientId, photoUrl: `/api/native/photos/sign/${signId}` };
+    // The blob is stored before the DB write. If attaching the URL fails (a DB
+    // error, or the event vanished between the check above and now), delete the
+    // just-uploaded blob so a failed attach can't orphan paid storage (m17 #106).
+    let attached: Awaited<ReturnType<typeof attachDeployPhoto>>;
+    try {
+      attached = await attachDeployPhoto(clientId, pathname);
+    } catch (dbErr) {
+      await deletePrivateImage(pathname);
+      throw dbErr;
+    }
+    if (attached === null) {
+      await deletePrivateImage(pathname);
+      throw new ApiError(404, "unknown deploy event");
+    }
+    // A deploy that lost its race keeps its photo on the event (after-action log)
+    // but is NOT the sign's photo, so hand back the event-scoped URL — the
+    // sign-scoped one serves the winning deploy's photo, not this upload (#231).
+    return {
+      clientId,
+      photoUrl: attached.cachedOnSign
+        ? `/api/native/photos/sign/${attached.signId}`
+        : `/api/native/deploys/${encodeURIComponent(clientId)}/photo`,
+      cachedOnSign: attached.cachedOnSign,
+    };
   });
 }
 
@@ -87,7 +110,7 @@ export async function GET(
     await requireApiSession();
   } catch (err) {
     if (err instanceof ApiError) return apiError(err.status, err.message);
-    console.error("/api/native photo session check failed", err);
+    logError("api.native.deploy-photo.session-check", err);
     return apiError(500, "internal error");
   }
   const { clientId } = await params;

@@ -8,6 +8,8 @@
 //   - ApiHttpError  → the server answered with a non-2xx. `status` decides
 //     whether it's permanent (4xx → dead-letter) or transient (429/5xx → retry).
 
+import { isPermanentStatus } from "@/lib/offline/http-classification";
+
 import type {
   BootstrapResponse,
   ChangesResponse,
@@ -34,12 +36,7 @@ export class ApiHttpError extends Error {
   // retrying. 401 is auth-expiry: handled separately as a re-auth prompt (the
   // queued work CAN succeed once the user signs back in), so it's not permanent.
   get permanent(): boolean {
-    return (
-      this.status >= 400 &&
-      this.status < 500 &&
-      this.status !== 429 &&
-      this.status !== 401
-    );
+    return isPermanentStatus(this.status);
   }
 }
 

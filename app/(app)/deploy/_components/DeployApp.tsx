@@ -6,6 +6,7 @@ import type { DeploySignView } from "@/lib/deploy/contract";
 import { useDevice } from "@/app/_components/DeviceProvider";
 import { Skeleton } from "@/app/_components/Skeleton";
 import { useDeployStore } from "../_lib/store";
+import { canCrewDeploy } from "../_lib/rules";
 import type {
   ClaimPayload,
   DeployPayload,
@@ -27,8 +28,19 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
 
   // Desktop preview focus + the single deploy-confirmation target, both hoisted
   // here so the list rows AND the desktop preview pane drive ONE DeploySheet.
+  // Both are ids, never captured sign objects — see deployTarget below.
   const [focusedId, setFocusedId] = useState<number | null>(null);
-  const [deployTarget, setDeployTarget] = useState<DeploySignView | null>(null);
+  const [deployTargetId, setDeployTargetId] = useState<number | null>(null);
+  // Why the confirmation sheet closed without deploying, when it did.
+  const [deployBlocked, setDeployBlocked] = useState<string | null>(null);
+
+  // Selection + search for the sign list. Hoisted out of SignList because only
+  // ONE of the mobile/desktop lists is mounted at a time: crossing the breakpoint
+  // swaps them, and state living inside the list went with the unmount — a crew
+  // mid-way through picking signs to batch-claim lost the lot, silently, just by
+  // rotating a tablet. (#192)
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [query, setQuery] = useState("");
 
   // Sign ids touched by a not-yet-synced local action — shown as "syncing".
   const pendingSignIds = useMemo(() => {
@@ -71,10 +83,31 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
   // live claim/deploy state, not a stale snapshot taken at click time.
   const focusedSign =
     focusedId !== null ? (store.signs[focusedId] ?? null) : null;
-  const focusedCanDeploy =
-    !!focusedSign &&
-    focusedSign.status === "sorted" &&
-    focusedSign.claimedByCrewId === store.activeCrewId;
+  const focusedCanDeploy = canCrewDeploy(focusedSign, store.activeCrewId);
+
+  // The confirmation sheet's sign gets the same treatment (#191). It used to be
+  // the object captured when Deploy was clicked, so if another crew member on
+  // another device deployed it — or a sync reconciled the claim away — while the
+  // sheet sat open, the sheet kept showing the stale sign and confirming enqueued
+  // a deploy that was already doomed.
+  const deployTarget =
+    deployTargetId !== null ? (store.signs[deployTargetId] ?? null) : null;
+
+  // The target can leave the working set outright while the sheet is open — a lead
+  // hands the sign off or archives it, and the next bootstrap rebuilds store.signs
+  // without it. Derived rather than an effect, so there's no state to strand: the
+  // sheet would otherwise just vanish, taking the volunteer's typed notes and
+  // captured photo with it and saying nothing. (#191)
+  const deployTargetGone =
+    deployTargetId !== null && deployTarget === null && store.loaded;
+  const deployNotice = deployTargetGone
+    ? "That sign left the floor list while the sheet was open — it was handed off or removed. Nothing was recorded."
+    : deployBlocked;
+
+  const openDeploySheet = (signId: number) => {
+    setDeployBlocked(null);
+    setDeployTargetId(signId);
+  };
 
   return (
     <div className="space-y-4">
@@ -101,6 +134,18 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
               {store.pendingCount} queued
             </span>
           )}
+          {store.backingOff && (
+            // The circuit breaker is open after repeated failures. Without this
+            // the tool just sits there — no spinner, no error, queue not moving —
+            // which reads as hung at the exact moment a volunteer is trying to
+            // recover. (#206)
+            <span
+              className="rounded-full bg-[var(--surface-2)] px-2 py-1 text-zinc-400"
+              title="Repeated sync failures — waiting before the next attempt."
+            >
+              Retrying soon
+            </span>
+          )}
           <button
             type="button"
             onClick={() => void store.syncNow()}
@@ -124,6 +169,31 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
           <button
             type="button"
             onClick={store.clearNotice}
+            className="shrink-0 text-highlight/70 hover:text-highlight"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* A deploy the sheet had to abandon because the sign moved under it (#191).
+          Separate from store.notice, which a sync can overwrite at any tick — this
+          one has to survive long enough to be read on a phone. Dismissing also
+          releases a target id whose sign vanished, so it can't silently re-open the
+          sheet if a later bootstrap brings the sign back. */}
+      {deployNotice && (
+        <div
+          role="alert"
+          className="flex items-start justify-between gap-3 rounded border border-highlight/40 bg-highlight/10 px-3 py-2 text-sm text-highlight"
+        >
+          <span>{deployNotice}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setDeployBlocked(null);
+              setDeployTargetId(null);
+            }}
             className="shrink-0 text-highlight/70 hover:text-highlight"
             aria-label="Dismiss"
           >
@@ -164,7 +234,11 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
           layout="mobile"
           focusedId={null}
           onFocus={setFocusedId}
-          onDeploy={setDeployTarget}
+          onDeploy={openDeploySheet}
+          selected={selected}
+          setSelected={setSelected}
+          query={query}
+          setQuery={setQuery}
         />
       ) : (
         <div className="grid items-start gap-4 lg:grid-cols-[1fr_320px]">
@@ -175,7 +249,11 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
             layout="desktop"
             focusedId={focusedId}
             onFocus={setFocusedId}
-            onDeploy={setDeployTarget}
+            onDeploy={openDeploySheet}
+            selected={selected}
+            setSelected={setSelected}
+            query={query}
+            setQuery={setQuery}
           />
           <div className="space-y-4 lg:sticky lg:top-4">
             <QueuePanel store={store} />
@@ -183,7 +261,7 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
               sign={focusedSign}
               pending={focusedSign ? pendingSignIds.has(focusedSign.id) : false}
               canDeploy={focusedCanDeploy}
-              onDeploy={setDeployTarget}
+              onDeploy={openDeploySheet}
             />
           </div>
         </div>
@@ -192,10 +270,33 @@ export function DeployApp({ currentUserId }: { currentUserId: string }) {
       {deployTarget && (
         <DeploySheet
           sign={deployTarget}
-          onCancel={() => setDeployTarget(null)}
-          onConfirm={(opts) => {
-            void store.deploy(deployTarget.id, opts);
-            setDeployTarget(null);
+          onCancel={() => setDeployTargetId(null)}
+          onConfirm={async (opts) => {
+            // Re-check against the sign as it is NOW, not as it was when the sheet
+            // opened. store.deploy writes the optimistic "deployed" overlay
+            // unconditionally, so without this a doomed deploy would show as ours
+            // until a sync reconciled it back. A sign we can no longer deploy is
+            // not retryable, so close the sheet and say why. (#191)
+            if (!canCrewDeploy(deployTarget, store.activeCrewId)) {
+              setDeployBlocked(
+                `${deployTarget.itemId} changed while this was open — ${
+                  deployTarget.status === "deployed"
+                    ? "it's already marked deployed."
+                    : "your crew no longer holds the claim."
+                }`,
+              );
+              setDeployTargetId(null);
+              return;
+            }
+            // Await the durable write (store.deploy owns its own failure notice),
+            // and close the sheet ONLY on success — a failed write keeps the sheet
+            // and its captured photo so the volunteer can retry, not lose it. (#59)
+            try {
+              await store.deploy(deployTarget.id, opts);
+              setDeployTargetId(null);
+            } catch {
+              // notice already surfaced by store.deploy; keep the sheet open.
+            }
           }}
         />
       )}

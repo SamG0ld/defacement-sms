@@ -84,7 +84,7 @@ export function buildSignSheetPreview(
       mappedColumns: [],
       ignoredHeaders: [],
       rows: [],
-      counts: { valid: 0, invalid: 0, duplicate: 0, total: 0 },
+      counts: { valid: 0, invalid: 0, duplicate: 0, readd: 0, total: 0 },
     };
   }
 
@@ -96,7 +96,7 @@ export function buildSignSheetPreview(
       mappedColumns: [],
       ignoredHeaders: [],
       rows: [],
-      counts: { valid: 0, invalid: 0, duplicate: 0, total: 0 },
+      counts: { valid: 0, invalid: 0, duplicate: 0, readd: 0, total: 0 },
     };
   }
 
@@ -122,6 +122,15 @@ export function buildSignSheetPreview(
   // the sign form, not this sheet. Track how many rows we skipped so we can say so.
   let inSpecialtySection = false;
   let specialtySkipped = 0;
+
+  // Every synthetic id handed to a blank-Map# row -> the line that claimed it. Two
+  // genuinely distinct rows can share text + placement, which used to hand them the
+  // SAME id — making the second look like a re-import of the first, so it was
+  // classified `duplicate` and dropped from the print run without a word. Keyed on
+  // the ASSIGNED id, not the unsuffixed base, so a row whose own base happens to
+  // equal an earlier row's suffixed id can't quietly land on top of it.
+  const autoIdAssigned = new Map<string, number>();
+  let autoIdCollisions = 0;
 
   const drafts: RowDraft[] = [];
 
@@ -204,16 +213,45 @@ export function buildSignSheetPreview(
       warnings,
     );
 
-    // Stable synthetic id when Map# is blank: derived from content (not line
-    // number) so re-importing an edited sheet still dedupes.
-    const autoId = `${CON_SLUG}-${slugify(signText)}-${slugify(placementArea ?? "")}`.slice(
-      0,
-      100,
-    );
+    // Synthetic id when Map# is blank: derived from content (not line number), so a
+    // sheet re-imported unchanged hands every row the id it had last time and dedupes
+    // against the DB exactly as before. The FIRST row to claim an id keeps it
+    // unsuffixed; a later row landing on it is a different physical sign that happens
+    // to share text + placement, so it takes the next free `-rN` and says so, instead
+    // of silently vanishing as a "duplicate". (Rows that collide are by definition
+    // indistinguishable by content, so which of them holds the unsuffixed id is
+    // decided by sheet order — delete one and the survivor inherits that id.)
+    let itemId = labelCell;
+    if (!itemId) {
+      const base = `${CON_SLUG}-${slugify(signText)}-${slugify(placementArea ?? "")}`.slice(
+        0,
+        100,
+      );
+      let attempt = 1;
+      let collidedWith: number | undefined;
+      itemId = base;
+      // Probing is O(n²) in rows that collide on ONE base (row k probes k ids), which
+      // MAX_IMPORT_ROWS (2000) is what bounds — ~0.5s at the ceiling for a sheet whose
+      // every row collides. Revisit this loop if that cap is ever raised.
+      while (autoIdAssigned.has(itemId)) {
+        collidedWith ??= autoIdAssigned.get(itemId);
+        attempt += 1;
+        const suffix = `-r${attempt}`;
+        itemId = base.slice(0, 100 - suffix.length) + suffix;
+      }
+      autoIdAssigned.set(itemId, line);
+      if (collidedWith !== undefined) {
+        autoIdCollisions += 1;
+        warnings.push(
+          `blank Map# repeats line ${collidedWith} (same sign text + location); imported as "${itemId}" rather than deduped — delete this row if it is the same sign`,
+        );
+      }
+    }
 
     const data: SignData = {
-      itemId: labelCell || autoId,
+      itemId,
       signText,
+      sheetName: null, // the sign-sheet source is not the master roster
       signType: cell(row, map.signType) || signTypeFromSize(sizeRaw),
       size: sizeRaw || "Unspecified",
       quantity: clampQuantity(cell(row, map.quantity)),
@@ -224,6 +262,9 @@ export function buildSignSheetPreview(
       category: currentCategory ?? categoryFromSize(sizeRaw),
       printable: !/easels?\s*only/i.test(signText),
       placementArea,
+      // The sign-sheet source carries no room-identity column; a lead sets the
+      // printed Room in the UI or via a re-export/round-trip when needed.
+      exactDestination: null,
       notes,
       deploymentSlot,
       zoneId,
@@ -236,9 +277,14 @@ export function buildSignSheetPreview(
   });
 
   const notices: string[] = [];
+  if (autoIdCollisions > 0) {
+    notices.push(
+      `${autoIdCollisions} blank Map# row(s) repeat an earlier row's sign text + location. Each was imported under its own generated ID instead of being dropped as a duplicate — check the flagged rows and delete any that are the same physical sign.`,
+    );
+  }
   if (specialtySkipped > 0) {
     notices.push(
-      `Specialty section detected — ${specialtySkipped} row(s) below it were not imported (floor/wall graphics, venue maps, sticker walls). Add these via the sign form.`,
+      `Specialty section detected — ${specialtySkipped} row(s) below it were not imported (floor/wall graphics, venue maps, sticker walls). Add these via Specialty intake (/signs/specialty).`,
     );
   }
 

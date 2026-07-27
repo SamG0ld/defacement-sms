@@ -32,7 +32,7 @@ model User {
   isActive         Boolean   @default(true)
   tokenVersion     Int       @default(0)
   // SHA-256 hex of the invitation token. The plaintext token only ever
-  // travels in the email link; the DB stores the hash so a Neon breach
+  // travels in the email link; the DB stores the hash so a database breach
   // cannot trivially convert unused invites into accounts.
   invitationTokenHash String?   @unique @map("invitation_token_hash")
   invitationExpiry    DateTime?

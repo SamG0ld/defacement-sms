@@ -4,7 +4,12 @@ import { useState } from "react";
 
 import { MapPinPicker } from "./MapPinPicker";
 
-type FloorOption = { key: string; src: string; label: string };
+type FloorOption = {
+  key: string;
+  src: string;
+  label: string;
+  width?: number | null;
+};
 
 // Floor reassignment for a sign's override pin: pick which floor map to place on
 // (defaults to the sign's resolved/zone floor), then drop the pin on it. This is
@@ -55,6 +60,7 @@ export function FloorReassign({
         key={fm.key}
         src={fm.src}
         label={fm.label}
+        imageWidth={fm.width}
         initial={initial}
         currentMarker={currentMarker}
         action={action}

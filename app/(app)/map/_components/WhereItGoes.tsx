@@ -69,6 +69,7 @@ export async function WhereItGoes({
           <FloorPinView
             src={viewFm.src}
             label={viewFm.label}
+            imageWidth={viewFm.width}
             pins={[
               {
                 key: sign.id,

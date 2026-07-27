@@ -6,7 +6,7 @@ import { execSync } from "node:child_process";
 //
 // Match the DATABASE NAME only (the URL path), never the whole connection
 // string — otherwise a host/credential containing the substring "test" (e.g. a
-// Neon endpoint id like "ep-xxxx-...") would falsely arm a destructive
+// managed-Postgres endpoint id like "ep-xxxx-...") would falsely arm a destructive
 // TRUNCATE. ALLOW_TEST_DB_RESET is the explicit escape hatch (CI uses it against
 // its throwaway container).
 function looksLikeTestDb(url: string): boolean {
@@ -24,7 +24,7 @@ export default function setup() {
   if (!url) {
     throw new Error(
       "[integration] No DATABASE_URL. Copy .env.test.example to .env.test and point it " +
-        "at a DISPOSABLE Postgres (a Neon test branch or throwaway local DB).",
+        "at a DISPOSABLE Postgres (a dedicated test branch or throwaway local DB).",
     );
   }
   if (!looksLikeTestDb(url)) {

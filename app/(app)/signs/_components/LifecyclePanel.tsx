@@ -3,8 +3,11 @@
 // custody: accept delivery from the print shop → hand off to a union crew / ops
 // team → confirm installed. The "current action" is driven by which stamps exist
 // (deliveredAt / handedOffAt / installedAt), not by raw status, so it stays correct
-// even if status was jumped via the generic dropdown. Proof photos are streamed
-// through the auth-gated /api/photos/sign route (never world-readable).
+// even if status was jumped via the generic dropdown — the ONE status that does
+// decide it is `archived`, which closes the fork entirely (#269). Proof photos are
+// streamed through the auth-gated /api/photos/sign route (never world-readable).
+import Link from "next/link";
+
 import type { SignCategory, SignStatus } from "@/app/generated/prisma/enums";
 
 import {
@@ -12,7 +15,7 @@ import {
   recordDelivery,
   recordHandoff,
 } from "../lifecycle-actions";
-import { formatDateTime, isExternalCategory } from "../_lib";
+import { ARCHIVED_STATUS, formatDateTime, isExternalCategory } from "../_lib";
 
 type LifecycleSign = {
   id: number;
@@ -65,13 +68,21 @@ export function LifecyclePanel({ sign }: { sign: LifecycleSign }) {
   if (!isExternalCategory(sign.category)) return null;
 
   const installer = sign.category === "ops_map" ? "ops team" : "union crew";
-  const stage = sign.installedAt
-    ? "done"
-    : sign.handedOffAt
-      ? "install"
-      : sign.deliveredAt
-        ? "handoff"
-        : "delivery";
+  // A soft-removed item has no live lifecycle step: the server refuses all three
+  // actions for an `archived` sign (lifecycle-actions.ts), so offering the forms
+  // would be a permanent refusal dressed up as an available action (#269). The
+  // stamps below still render — the chain of custody up to removal is history
+  // worth keeping on screen — but the current-action fork becomes a notice.
+  const stage =
+    sign.status === ARCHIVED_STATUS
+      ? "removed"
+      : sign.installedAt
+        ? "done"
+        : sign.handedOffAt
+          ? "install"
+          : sign.deliveredAt
+            ? "handoff"
+            : "delivery";
 
   return (
     <section className="space-y-4 rounded-lg border border-amber-900/60 bg-amber-950/10 p-4">
@@ -143,6 +154,17 @@ export function LifecyclePanel({ sign }: { sign: LifecycleSign }) {
       </dl>
 
       {/* The current action. */}
+      {stage === "removed" && (
+        <p className="border-t border-zinc-800 pt-4 text-xs text-zinc-400">
+          This item has been removed from the record, so its delivery, handoff and
+          install steps are closed.{" "}
+          <Link href="/signs?status=archived" className="text-sky-400 hover:text-sky-300">
+            Restore it from the Removed view
+          </Link>{" "}
+          to continue the lifecycle.
+        </p>
+      )}
+
       {stage === "delivery" && (
         <form
           action={recordDelivery.bind(null, sign.id)}
@@ -157,6 +179,7 @@ export function LifecyclePanel({ sign }: { sign: LifecycleSign }) {
               type="number"
               name="receivedQty"
               min={0}
+              defaultValue={sign.quantity}
               placeholder={String(sign.quantity)}
               className={`${inputClass} w-28`}
             />

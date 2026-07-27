@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { getSession } from "@/lib/session";
+import { requirePageSession } from "@/lib/page-guards";
 import { prisma } from "@/lib/db";
 import type { SignStatus } from "@/app/generated/prisma/client";
 import { TelemetryGauge } from "@/app/_components/TelemetryGauge";
@@ -9,17 +9,28 @@ import { DistBar } from "./signs/_components/DistBar";
 import { SIGN_STATUSES, pacificTodayUtc } from "./signs/_lib";
 
 export default async function DashboardPage() {
-  const session = await getSession();
+  const session = await requirePageSession();
   const today = pacificTodayUtc();
 
+  // Archived (soft-removed) signs are excluded from every dashboard figure so the
+  // deployment gauge's denominator + the due counts reflect the LIVE record only —
+  // a removed training sign must not drag the progress percentage. (This groupBy
+  // doesn't run through buildSignWhere, so the exclusion is explicit here.)
   const [grouped, total, dueToday, overdue] = await Promise.all([
-    prisma.sign.groupBy({ by: ["status"], _count: { _all: true } }),
-    prisma.sign.count(),
+    prisma.sign.groupBy({
+      by: ["status"],
+      _count: { _all: true },
+      where: { status: { not: "archived" } },
+    }),
+    prisma.sign.count({ where: { status: { not: "archived" } } }),
     prisma.sign.count({
-      where: { status: { not: "deployed" }, deployByDate: today },
+      where: { status: { notIn: ["deployed", "archived"] }, deployByDate: today },
     }),
     prisma.sign.count({
-      where: { status: { not: "deployed" }, deployByDate: { lt: today } },
+      where: {
+        status: { notIn: ["deployed", "archived"] },
+        deployByDate: { lt: today },
+      },
     }),
   ]);
 

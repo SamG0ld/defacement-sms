@@ -10,10 +10,11 @@ import { redirect } from "next/navigation";
 
 import { recordAudit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
+import { logError } from "@/lib/log";
 import { checkMutationRateLimit } from "@/lib/ratelimit";
 import type { Prisma, SignStatus } from "@/app/generated/prisma/client";
 
-import { buildSignWhere, type SignFilters } from "./_lib";
+import { ARCHIVED_STATUS, buildSignWhere, type SignFilters } from "./_lib";
 
 // Reject pathological explicit selections so a hand-built form can't ask us to
 // bind hundreds of thousands of ids in a single IN list.
@@ -37,6 +38,11 @@ function readFilters(fd: FormData): SignFilters {
     tag: get("tag"),
     slot: get("slot"),
     type: get("type"),
+    // category was silently dropped here while buildSignWhere + the list page
+    // both honour it — so "Select all N matching → Generate/bulk" over a
+    // category-filtered board rebuilt the WRONG (broader) set server-side. The
+    // bulk bar posts it; forward it so the full-filtered-set path is exact.
+    category: get("category"),
     q: get("q"),
     due: get("due"),
   };
@@ -79,6 +85,39 @@ export function targetWhere(target: BulkTarget): Prisma.SignWhereInput {
   return target.kind === "ids"
     ? { id: { in: target.ids } }
     : buildSignWhere(target.filters);
+}
+
+// targetWhere + "and not soft-removed" — the server-side mirror of the BulkBar's
+// `{!onArchivedView && …}` render gate, which is client-only and so bypassable by
+// a replayed/hand-crafted POST (#172). Needed for BOTH target kinds: an explicit
+// `ids` selection never filtered on status at all, and a `filter` selection built
+// on the Removed view resolves to `status = archived` by design (buildSignWhere
+// treats it as a first-class filter value for that view).
+//
+// Use this for every mutating bulk path EXCEPT the three that legitimately act on
+// removed rows: bulkDelete (hard delete is allowed to reach them), bulkArchive
+// (already narrowed to pending/generated) and bulkRestore (archived IS its input).
+// It's what keeps _lib.ts's stated invariant true — "the only way IN is archive,
+// the only way OUT is restore".
+export function nonArchivedWhere(target: BulkTarget): Prisma.SignWhereInput {
+  return { AND: [targetWhere(target), { status: { not: ARCHIVED_STATUS } }] };
+}
+
+// Lock the given sign rows for the rest of `tx` so a check-then-write can't race
+// a concurrent writer (#171/#222). ORDER BY id so two overlapping selections
+// always take their locks in the same order and can't deadlock — the same idiom
+// generateSelection and the lifecycle actions already use.
+//
+// Locks by id only; callers re-read whichever columns they need with `tx.sign.*`
+// straight after. Under READ COMMITTED that follow-up statement takes a fresh
+// snapshot, and since these rows are now locked, what it reads IS committed truth
+// for the duration of the transaction.
+export async function lockSigns(
+  tx: Prisma.TransactionClient,
+  ids: number[],
+): Promise<void> {
+  if (ids.length === 0) return;
+  await tx.$queryRaw`SELECT id FROM signs WHERE id = ANY(${ids}) ORDER BY id FOR UPDATE`;
 }
 
 export function chunk<T>(arr: T[], size: number): T[][] {
@@ -134,6 +173,15 @@ export function done(returnTo: string): never {
   redirect(returnTo);
 }
 
+// Success redirect that also carries a one-line notice for the list to show
+// (e.g. "removed 30; skipped 5 already-printed"). Same revalidate as done();
+// the list renders `?notice=` as a neutral banner, distinct from `?error=`.
+export function doneWithNotice(returnTo: string, notice: string): never {
+  revalidatePath("/signs");
+  const sep = returnTo.includes("?") ? "&" : "?";
+  redirect(`${returnTo}${sep}notice=${encodeURIComponent(notice)}`);
+}
+
 // Human-readable selection size for the audit detail without an extra count
 // query (exact counts are passed in where a path already resolved its rows).
 export function targetDesc(target: BulkTarget): string {
@@ -168,7 +216,42 @@ export async function runWrite(
   try {
     await fn();
   } catch (err) {
-    console.error(`[bulk] ${label} failed`, err);
+    logError("signs.bulk", err, { label });
+    // Two callers can collide with the master-sheet identity index added in
+    // migration 20260724120000, each for its own reason and each needing its own
+    // story. Both are named explicitly so a future P2002 elsewhere can't inherit a
+    // confidently wrong one.
+    //
+    // bulkSetFormat writes `category`, the column in that index — a reformat
+    // sweeping a master primary AND its sock into one format collides, since the
+    // parser emits that pair sharing item_id + sheet_name and differing only by
+    // category. "Try again" would never work for that, so name the real cause.
+    if (label === "bulkSetFormat" && (err as { code?: string })?.code === "P2002") {
+      fail(
+        returnTo,
+        "That would give two signs the same room, sheet name and item type — most " +
+          "likely a sign and its sock being reformatted together. Narrow the " +
+          "selection, or change one of the two signs first.",
+      );
+    }
+    // bulkRestore is the second caller that can hit that index: #263 exempted
+    // archived rows from it, so restoring a tombstone moves the row back INTO the
+    // predicate and can collide with a live twin — or with a second tombstone on
+    // the same identity being restored alongside it. bulkRestore pre-checks for
+    // both inside its lock, so reaching here means the conflict appeared DURING
+    // the run — a genuine race, and the one case where re-running actually works.
+    // Deliberately does NOT claim "nothing was restored": restore commits one
+    // transaction per 5,000-row chunk, so earlier chunks may already be committed.
+    // Re-running is safe either way — restore only ever touches rows still
+    // archived, so a committed chunk is a no-op the second time through.
+    if (label === "bulkRestore" && (err as { code?: string })?.code === "P2002") {
+      fail(
+        returnTo,
+        "Restore stopped partway: another sign now uses the same room, sheet name " +
+          "and item type as one you're restoring. Re-run Restore — anything already " +
+          "restored is left alone, and the conflicting sign will be listed and skipped.",
+      );
+    }
     fail(returnTo, "Could not apply the change. Please try again.");
   }
 }

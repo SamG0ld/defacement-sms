@@ -21,7 +21,8 @@ export type DeployPayload = {
   crewId: number | null;
   deployedAt: string; // ISO — the client's local deploy instant
   notes?: string;
-  hasPhoto: boolean;
+  // No `hasPhoto`: photo presence is the server's photoUrl, derived after the
+  // photo uploads separately. The wire field was server-ignored (#102).
 };
 // The photo bytes live in a separate IndexedDB store keyed by the SAME clientId
 // as the deploy event, so the upload can find them after the deploy applies.

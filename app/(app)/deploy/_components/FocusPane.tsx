@@ -1,29 +1,16 @@
 "use client";
 
 import type { DeploySignView } from "@/lib/deploy/contract";
+import { formatShortDateTime } from "@/app/(app)/signs/_lib";
+
+import { DeployImg } from "../../_components/DeployImg";
+import { zoneLabel } from "../_lib/zone-label";
 
 // Desktop-only preview pane for /deploy's right rail. Pure presentational — fed a
 // focused sign (resolved fresh from the store by DeployApp, so it reflects live
 // claim/deploy state) plus whether the active crew may deploy it. Clicking a sign
 // row on desktop focuses it here; the Deploy button reuses the single DeploySheet
 // flow via onDeploy rather than introducing a second deploy path. No store access.
-
-function zoneLabel(s: DeploySignView): string {
-  return s.zoneId ? `Zone ${s.zoneId}` : "Unzoned";
-}
-
-function shortTime(iso: string | null): string | null {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? null
-    : d.toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-}
 
 export function FocusPane({
   sign,
@@ -34,7 +21,7 @@ export function FocusPane({
   sign: DeploySignView | null;
   pending: boolean;
   canDeploy: boolean;
-  onDeploy: (sign: DeploySignView) => void;
+  onDeploy: (signId: number) => void;
 }) {
   // Reserve height in the empty state so focusing/clearing a sign doesn't shift
   // the rail layout (no CLS).
@@ -54,8 +41,8 @@ export function FocusPane({
       : sign.claimedByCrewId !== null
         ? "Claimed by another crew"
         : "Unclaimed";
-  const claimedTime = shortTime(sign.claimedAt);
-  const deployedTime = shortTime(sign.deployedAt);
+  const claimedTime = formatShortDateTime(sign.claimedAt);
+  const deployedTime = formatShortDateTime(sign.deployedAt);
 
   return (
     <div className="panel space-y-3 p-4">
@@ -101,11 +88,11 @@ export function FocusPane({
         // Fixed aspect ratio so the panel doesn't jump height on image load
         // (the rail is sticky, so a late reflow would shift it).
         <div className="aspect-video w-full overflow-hidden rounded border border-[var(--line)]">
-          {/* eslint-disable-next-line @next/next/no-img-element -- auth-gated deploy photo */}
-          <img
+          <DeployImg
             src={sign.deployPhotoUrl}
             alt={`Deployed ${sign.itemId}`}
             className="h-full w-full object-cover"
+            fallbackClassName="flex h-full w-full items-center justify-center text-xs text-zinc-500"
           />
         </div>
       )}
@@ -113,7 +100,7 @@ export function FocusPane({
       {canDeploy && (
         <button
           type="button"
-          onClick={() => onDeploy(sign)}
+          onClick={() => onDeploy(sign.id)}
           className="btn btn-primary w-full justify-center"
         >
           Deploy

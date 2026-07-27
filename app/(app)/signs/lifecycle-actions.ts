@@ -5,13 +5,17 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 
 import { prisma } from "@/lib/db";
+import { recordAudit } from "@/lib/audit";
 import { checkMutationRateLimit } from "@/lib/ratelimit";
 import { requireSession } from "@/lib/rbac";
+import { archivedRefusal } from "@/lib/sign-status-authz";
 import { validateImageUpload } from "@/lib/image-upload";
+import { deletePrivateImage } from "@/lib/blob-image";
 import { uploadSignPhoto, type SignPhotoKind } from "@/lib/sign-photos";
 
 import { isExternalCategory, stampsForStatus } from "./_lib";
 import type { SignCategory } from "@/app/generated/prisma/enums";
+import type { Prisma } from "@/app/generated/prisma/client";
 
 // ---------------------------------------------------------------------------
 // External-item lifecycle (Phase 2). union_installed / ops_map signs are produced
@@ -59,8 +63,9 @@ function photoErrorMessage(error: string): string {
 // Read an optional "photo" file field: validate its magic bytes and upload to
 // private Blob, returning the stored pathname (or null if none supplied). Uses the
 // validated content type, never the browser-declared one. Throws a user-facing
-// redirect on an invalid image. Uploaded before the DB write — a Blob orphaned by
-// a failed transaction is harmless (private + unreferenced).
+// redirect on an invalid image. Uploaded before the DB write; if that write fails
+// or is rejected, the caller deletes this blob via persistWithPhoto so a failed
+// transaction can't orphan paid Blob storage (m17 #106).
 async function uploadOptionalPhoto(
   signId: number,
   kind: SignPhotoKind,
@@ -74,16 +79,46 @@ async function uploadOptionalPhoto(
   return uploadSignPhoto(signId, kind, bytes, result.image.contentType);
 }
 
+// Run a lifecycle status transaction that records a freshly-uploaded photo,
+// deleting that blob if the transaction throws — a real DB error *or* a guard
+// `redirect()` (which rolls the tx back). The photo is uploaded before the
+// transaction, so without this a failed or rejected persist orphans paid Blob
+// storage (m17 #106). Safe because these transactions never redirect on SUCCESS
+// (callers revalidate + return), so every throw means the photo was not recorded.
+async function persistWithPhoto(
+  photoPath: string | null,
+  work: (tx: Prisma.TransactionClient) => Promise<void>,
+): Promise<void> {
+  try {
+    await prisma.$transaction(work);
+  } catch (err) {
+    if (photoPath) await deletePrivateImage(photoPath);
+    throw err;
+  }
+}
+
 function optNotes(formData: FormData, max: number): string | null {
   const raw = formData.get("notes");
   const v = typeof raw === "string" ? raw.trim() : "";
   return v === "" ? null : v.slice(0, max);
 }
 
-// Fetch a sign for a lifecycle action, asserting it's an externally-installed
-// class (union_installed / ops_map). The dedicated UI only renders for these;
-// guarding here keeps the receiving/handoff/install fields off a sign that doesn't
-// belong on this fork (defense for a hand-crafted POST to a bound action).
+// A soft-removed sign leaves `archived` ONLY through Restore — these actions are
+// no exception (#269). The rule and its wording live in lib/sign-status-authz.ts
+// so this fork and the generic status path tell the operator the same story; only
+// the claim/rank/category parts of that policy are out of scope here (see the
+// module header there). Called from BOTH the pre-tx early-exit below AND each
+// action's locked in-tx re-read, since a sign can be removed between the two.
+function refuseIfArchived(signId: number, status: string): void {
+  const refusal = archivedRefusal(status);
+  if (refusal) failDetail(signId, refusal.reason);
+}
+
+// Fetch a sign for a lifecycle action, asserting it's neither soft-removed nor
+// outside the externally-installed classes (union_installed / ops_map). The
+// dedicated UI only renders for these; guarding here keeps the
+// receiving/handoff/install fields off a sign that doesn't belong on this fork
+// (defense for a hand-crafted POST to a bound action).
 async function loadExternalSign(
   signId: number,
 ): Promise<{ id: number; status: string; category: SignCategory }> {
@@ -92,6 +127,9 @@ async function loadExternalSign(
     select: { id: true, status: true, category: true },
   });
   if (!sign) failList("Sign not found.");
+  // Checked ahead of the category rule: "this sign was removed from the record"
+  // is the more fundamental state, and is the actionable one for the operator.
+  refuseIfArchived(signId, sign.status);
   if (!isExternalCategory(sign.category)) {
     failDetail(
       signId,
@@ -162,16 +200,20 @@ export async function recordDelivery(
   if (parsed.data.condition) parts.push(`condition: ${parsed.data.condition}`);
   const notes = parts.length ? `Delivery — ${parts.join("; ")}` : "Delivery recorded";
 
+  // Captured from the locked (committed) status inside the tx so the audit row
+  // records the true from-status. (#90)
+  let fromStatus = sign.status;
   // Lock the row and re-check status INSIDE the tx so two concurrent submits
   // (double-tap / retried POST) can't both pass the guard and each write a
   // "delivered" history row (H3). loadExternalSign above is a cheap early-exit;
   // this is the authoritative, race-safe guard — and oldStatus is the locked
   // (committed) value rather than the possibly-stale pre-tx read.
-  await prisma.$transaction(async (tx) => {
+  await persistWithPhoto(photoPath, async (tx) => {
     const locked = await tx.$queryRaw<{ status: string }[]>`
       SELECT status FROM signs WHERE id = ${signId} FOR UPDATE`;
     const current = locked[0]?.status;
     if (current === undefined) failList("Sign not found.");
+    refuseIfArchived(signId, current);
     if (current === "delivered") {
       failDetail(signId, "Delivery has already been recorded for this item.");
     }
@@ -181,6 +223,7 @@ export async function recordDelivery(
         "Delivery can't be re-recorded after the item has been handed off or installed.",
       );
     }
+    fromStatus = current;
     await tx.sign.update({
       where: { id: signId },
       data: {
@@ -194,6 +237,17 @@ export async function recordDelivery(
     await tx.statusHistory.create({
       data: { signId, oldStatus: current, newStatus: "delivered", changedBy, notes },
     });
+  });
+
+  // Physical-handoff accountability: mirror #78 for the full external-item
+  // lifecycle so delivery/handoff/install show in the admin audit trail. (#90)
+  await recordAudit({
+    action: "sign.lifecycle",
+    actorId: session.user.id,
+    actorEmail: session.user.email ?? null,
+    detail:
+      `sign #${signId} ${fromStatus} → delivered` +
+      (parts.length ? ` (${parts.join("; ")})` : ""),
   });
 
   revalidatePath("/signs");
@@ -246,20 +300,23 @@ export async function recordHandoff(
     ? `Handed off to ${parsed.data.recipient} — ${parsed.data.notes}`
     : `Handed off to ${parsed.data.recipient}`;
 
+  let fromStatus = sign.status; // captured from the locked status in the tx (#90)
   // Lock + re-check inside the tx (H3): serialize concurrent submits so a
   // double-tap can't write two "handed_off" history rows. Authoritative guard;
   // the pre-tx check is an early-exit.
-  await prisma.$transaction(async (tx) => {
+  await persistWithPhoto(photoPath, async (tx) => {
     const locked = await tx.$queryRaw<{ status: string }[]>`
       SELECT status FROM signs WHERE id = ${signId} FOR UPDATE`;
     const current = locked[0]?.status;
     if (current === undefined) failList("Sign not found.");
+    refuseIfArchived(signId, current);
     if (current === "handed_off") {
       failDetail(signId, "Handoff has already been recorded for this item.");
     }
     if (current === "installed") {
       failDetail(signId, "Handoff can't be re-recorded after the item is installed.");
     }
+    fromStatus = current;
     await tx.sign.update({
       where: { id: signId },
       data: {
@@ -273,6 +330,14 @@ export async function recordHandoff(
     await tx.statusHistory.create({
       data: { signId, oldStatus: current, newStatus: "handed_off", changedBy, notes },
     });
+  });
+
+  // Physical-handoff accountability (#90).
+  await recordAudit({
+    action: "sign.lifecycle",
+    actorId: session.user.id,
+    actorEmail: session.user.email ?? null,
+    detail: `sign #${signId} ${fromStatus} → handed_off (to ${parsed.data.recipient})`,
   });
 
   revalidatePath("/signs");
@@ -303,17 +368,20 @@ export async function confirmInstalled(
   const stamps = stampsForStatus("installed", changedBy, new Date());
   const notes = extra ? `Installed — ${extra}` : "Installation confirmed";
 
+  let fromStatus = sign.status; // captured from the locked status in the tx (#90)
   // Lock + re-check inside the tx (H3): serialize concurrent submits so a
   // double-tap can't write two "installed" history rows. Authoritative guard;
   // the pre-tx check is an early-exit.
-  await prisma.$transaction(async (tx) => {
+  await persistWithPhoto(photoPath, async (tx) => {
     const locked = await tx.$queryRaw<{ status: string }[]>`
       SELECT status FROM signs WHERE id = ${signId} FOR UPDATE`;
     const current = locked[0]?.status;
     if (current === undefined) failList("Sign not found.");
+    refuseIfArchived(signId, current);
     if (current === "installed") {
       failDetail(signId, "This item is already confirmed installed.");
     }
+    fromStatus = current;
     await tx.sign.update({
       where: { id: signId },
       data: {
@@ -326,6 +394,14 @@ export async function confirmInstalled(
     await tx.statusHistory.create({
       data: { signId, oldStatus: current, newStatus: "installed", changedBy, notes },
     });
+  });
+
+  // Physical-handoff accountability (#90).
+  await recordAudit({
+    action: "sign.lifecycle",
+    actorId: session.user.id,
+    actorEmail: session.user.email ?? null,
+    detail: `sign #${signId} ${fromStatus} → installed`,
   });
 
   revalidatePath("/signs");

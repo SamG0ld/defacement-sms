@@ -48,7 +48,10 @@ export async function GET(
   const signs = await prisma.sign.findMany({
     where: { generationBatchId: id },
     select: signExportSelect,
-    orderBy: [{ deploymentPriority: "asc" }, { itemId: "asc" }],
+    // By size, then Item ID — the deploymentPriority sort was a no-op (uniform
+    // default). New batches are single-format; size ordering also keeps a legacy
+    // mixed-size batch grouped by size.
+    orderBy: [{ size: "asc" }, { itemId: "asc" }],
     take: MAX_EXPORT_ROWS,
   });
 

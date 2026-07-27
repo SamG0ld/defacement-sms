@@ -1,18 +1,14 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 
-import { getSession } from "@/lib/session";
+import { requirePageRole } from "@/lib/page-guards";
 import { prisma } from "@/lib/db";
-import { hasRole } from "@/lib/rbac";
+import { SYSTEM_TAG_SLUG_LIST } from "@/lib/tags";
 
 import { createSign } from "../actions";
 import { SignForm } from "../_components/SignForm";
 
 export default async function NewSignPage() {
-  const session = await getSession();
-  if (!session?.user?.role || !hasRole(session.user.role, "lead")) {
-    redirect("/signs");
-  }
+  await requirePageRole("lead", "/signs");
 
   const [zones, tags] = await Promise.all([
     prisma.zone.findMany({
@@ -21,6 +17,8 @@ export default async function NewSignPage() {
       select: { id: true, zoneCode: true, zoneName: true, building: true },
     }),
     prisma.signTag.findMany({
+      // System tags (e.g. `master-sheet`) aren't user-assignable (lib/tags.ts).
+      where: { slug: { notIn: SYSTEM_TAG_SLUG_LIST } },
       orderBy: { name: "asc" },
       select: { id: true, name: true },
     }),

@@ -42,7 +42,10 @@ export type StatusIndicator = "queued" | "failed" | "synced";
 // Rebuilt from the persisted outbox on mount so optimistic state survives a
 // reload (only pending/failed entries persist; synced ones are gone and the
 // server already reflects them).
+//
+// `syncedAt` (epoch ms) is stamped when an entry first becomes "synced" and bounds
+// how long that sticky value may keep masking server truth — see reconcile(). (#203)
 export type StatusOverlay = Record<
   number,
-  { status: SignStatusValue; indicator: StatusIndicator }
+  { status: SignStatusValue; indicator: StatusIndicator; syncedAt?: number }
 >;

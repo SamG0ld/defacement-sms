@@ -247,6 +247,43 @@ describe("confirmInstalled", () => {
   });
 });
 
+// #90: each external-item transition must leave an admin audit row, not just a
+// StatusHistory row — the same physical-handoff accountability #78 adds for gear.
+describe("lifecycle audit trail (#90)", () => {
+  it("recordDelivery writes a sign.lifecycle audit row with the from→to", async () => {
+    const s = await seedExternal();
+    await recordDelivery(s.id, fd({ receivedQty: "4", condition: "creased" }));
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: "sign.lifecycle" },
+      orderBy: { id: "desc" },
+    });
+    expect(audit?.actorId).toBe("u1");
+    expect(audit?.detail).toContain(`sign #${s.id}`);
+    expect(audit?.detail).toContain("printed → delivered");
+  });
+
+  it("recordHandoff writes a sign.lifecycle audit row naming the recipient", async () => {
+    const s = await seedExternal({ status: "delivered" });
+    await recordHandoff(s.id, fd({ handedOffTo: "Union Local 720" }));
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: "sign.lifecycle" },
+      orderBy: { id: "desc" },
+    });
+    expect(audit?.detail).toContain("delivered → handed_off");
+    expect(audit?.detail).toContain("Union Local 720");
+  });
+
+  it("confirmInstalled writes a sign.lifecycle audit row", async () => {
+    const s = await seedExternal({ status: "handed_off" });
+    await confirmInstalled(s.id, fd({}));
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: "sign.lifecycle" },
+      orderBy: { id: "desc" },
+    });
+    expect(audit?.detail).toContain("handed_off → installed");
+  });
+});
+
 describe("external-category guard", () => {
   it("rejects a lifecycle action on a non-external sign", async () => {
     const s = await prisma.sign.create({
@@ -340,5 +377,57 @@ describe("lifecycle idempotency under retry (H3 — no duplicate history rows)",
     expect(after?.status).toBe("installed");
     const hist = await prisma.statusHistory.findMany({ where: { signId: s.id } });
     expect(hist).toHaveLength(1);
+  });
+});
+
+// #269: none of the three actions may resurrect a soft-removed sign. Before the
+// fix loadExternalSign checked category only and the in-tx re-checks tested
+// `archived` against the wrong status list, so a removed banner's detail page
+// offered live forms that wrote it back to delivered/handed_off/installed.
+describe("archived signs are refused (#269)", () => {
+  const cases = [
+    {
+      name: "recordDelivery",
+      run: (id: number) => recordDelivery(id, fd({ receivedQty: "4" })),
+    },
+    {
+      name: "recordHandoff",
+      run: (id: number) => recordHandoff(id, fd({ handedOffTo: "Union Local 720" })),
+    },
+    { name: "confirmInstalled", run: (id: number) => confirmInstalled(id, fd({})) },
+  ];
+
+  for (const c of cases) {
+    it(`${c.name}: refuses an archived sign and leaves it archived`, async () => {
+      const s = await seedExternal({ status: "archived" });
+
+      const url = await captureRedirect(c.run(s.id));
+      expect(url).toContain(`/signs/${s.id}`);
+      // The shared refusal from lib/sign-status-authz.ts, so this path and the
+      // generic status path tell the operator the same thing.
+      expect(decodeURIComponent(url)).toContain("Restore this removed sign");
+
+      const after = await prisma.sign.findUnique({ where: { id: s.id } });
+      expect(after?.status).toBe("archived");
+      expect(after?.deliveredAt).toBeNull();
+      expect(after?.handedOffAt).toBeNull();
+      expect(after?.installedAt).toBeNull();
+      const hist = await prisma.statusHistory.findMany({ where: { signId: s.id } });
+      expect(hist).toHaveLength(0);
+    });
+  }
+
+  it("recordDelivery: an attached photo is not left orphaned when the guard refuses", async () => {
+    const s = await seedExternal({ status: "archived" });
+    const f = fd({ receivedQty: "4" });
+    f.set("photo", pngFile());
+
+    await captureRedirect(recordDelivery(s.id, f));
+
+    // The pre-tx guard fires before the upload, so the blob is never created —
+    // stronger than the persistWithPhoto cleanup path and worth pinning.
+    expect(vi.mocked(uploadSignPhoto)).not.toHaveBeenCalled();
+    const after = await prisma.sign.findUnique({ where: { id: s.id } });
+    expect(after?.deliveryPhotoUrl).toBeNull();
   });
 });

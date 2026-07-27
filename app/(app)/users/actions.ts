@@ -7,6 +7,7 @@ import { z } from "zod";
 import { recordAudit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { sendWelcomeEmail } from "@/lib/email";
+import { logError } from "@/lib/log";
 import { requireRole } from "@/lib/rbac";
 import { checkMutationRateLimit } from "@/lib/ratelimit";
 
@@ -74,7 +75,7 @@ export async function addUser(formData: FormData): Promise<void> {
     try {
       await sendWelcomeEmail(parsed.data.email, loginUrl());
     } catch (err) {
-      console.error("welcome email failed for", parsed.data.email, err);
+      logError("email.welcome-failed", err);
     }
   }
 
@@ -97,14 +98,15 @@ export async function setUserActive(
     target = await prisma.user.update({
       where: { id: userId },
       // Deactivating bumps tokenVersion so the existing jwt kill-switch revokes
-      // any live session within 24h.
+      // any live session within REFRESH_INTERVAL_MS — 15 minutes (lib/auth.ts).
+      // NOT 24h: that's `updateAge`, the unrelated cookie-rotation cadence.
       data: active
         ? { isActive: true }
         : { isActive: false, tokenVersion: { increment: 1 } },
       select: { email: true },
     });
   } catch (err) {
-    console.error("setUserActive failed", err);
+    logError("users.set-active", err);
     fail("Could not update the account. Try again.");
   }
 
@@ -132,18 +134,25 @@ export async function setUserRole(
   const parsed = z.enum(ROLES).safeParse(formData.get("role"));
   if (!parsed.success) fail("Invalid role.");
 
-  let target: { email: string } | undefined;
+  // Capture the prior role BEFORE overwriting — a post-update select would
+  // return the new role, leaving a privilege-escalation timeline impossible to
+  // reconstruct from the audit log alone. (#82)
+  const before = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true, role: true },
+  });
+  if (!before) fail("User not found.");
+
   try {
-    target = await prisma.user.update({
+    await prisma.user.update({
       where: { id: userId },
       // Any role change bumps tokenVersion so a live session can't ride a
       // now-revoked tier — same kill-switch the deactivation path uses. Takes
       // effect at the session's next JWT refresh.
       data: { role: parsed.data, tokenVersion: { increment: 1 } },
-      select: { email: true },
     });
   } catch (err) {
-    console.error("setUserRole failed", err);
+    logError("users.set-role", err);
     fail("Could not update the role. Try again.");
   }
 
@@ -151,7 +160,7 @@ export async function setUserRole(
     action: "user.role",
     actorId: session.user.id,
     actorEmail: session.user.email,
-    detail: `Set ${target?.email ?? `user #${userId}`} to ${parsed.data}`,
+    detail: `Changed ${before.email} from ${before.role} to ${parsed.data}`,
   });
 
   revalidatePath("/users");
@@ -178,7 +187,7 @@ export async function removeUser(userId: string): Promise<void> {
   try {
     await prisma.user.delete({ where: { id: userId } });
   } catch (err) {
-    console.error("removeUser failed", err);
+    logError("users.remove", err);
     fail("Could not remove the account. Try again.");
   }
 

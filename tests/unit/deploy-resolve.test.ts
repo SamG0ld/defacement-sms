@@ -3,14 +3,14 @@ import { describe, it, expect } from "vitest";
 import {
   buildClaimResponse,
   classifyDeploys,
+  deltaWindow,
   type SignClaimState,
 } from "@/lib/deploy/resolve";
-import type { DeployEventInput } from "@/lib/deploy/contract";
+import type { DeployEventInput, DeploySignView } from "@/lib/deploy/contract";
 
 const ev = (over: Partial<DeployEventInput> & Pick<DeployEventInput, "clientId" | "signId">): DeployEventInput => ({
   crewId: 1,
   deployedAt: new Date("2026-08-07T18:00:00.000Z"),
-  hasPhoto: false,
   ...over,
 });
 
@@ -125,5 +125,75 @@ describe("classifyDeploys — idempotency + conflict", () => {
     );
     expect(c.toApply).toHaveLength(1);
     expect(c.results[1]).toEqual({ clientId: "a", signId: 1, status: "duplicate" });
+  });
+});
+
+// #215: the delta cursor must never skip a row when the take() cap truncates the
+// page. `updatedAt` is the only thing the cursor carries (it stays an ISO string
+// on the wire), so a truncated page whose trailing timestamp group is only
+// partly present has to be re-fetched next call rather than stepped over.
+const view = (id: number, updatedAt: string): DeploySignView => ({
+  id,
+  itemId: `D-${id}`,
+  signText: `Sign ${id}`,
+  status: "sorted",
+  zoneId: null,
+  zoneCode: null,
+  claimedByCrewId: null,
+  claimedByUserId: null,
+  claimedAt: null,
+  deployedAt: null,
+  deployPhotoUrl: null,
+  updatedAt,
+});
+
+const T1 = "2026-08-07T18:00:00.000Z";
+const T2 = "2026-08-07T18:00:01.000Z";
+const T3 = "2026-08-07T18:00:02.000Z";
+
+describe("deltaWindow — cursor that can't skip a row at the take cap (#215)", () => {
+  it("an empty page yields no cursor (the caller keeps its own watermark)", () => {
+    expect(deltaWindow([], 3)).toEqual({ views: [], cursor: null, capped: false });
+  });
+
+  it("under the cap: keeps every row and advances to the max updatedAt", () => {
+    const views = [view(1, T1), view(2, T2)];
+    const res = deltaWindow(views, 5);
+    expect(res.views).toEqual(views);
+    expect(res.cursor).toBe(T2);
+    expect(res.capped).toBe(false);
+  });
+
+  it("flags a page that hit the cap so the caller can log it", () => {
+    expect(deltaWindow([view(1, T1), view(2, T2)], 2).capped).toBe(true);
+    expect(deltaWindow([view(1, T1), view(2, T2)], 3).capped).toBe(false);
+  });
+
+  it("at the cap: drops the (possibly partial) trailing timestamp group so the next call re-fetches it", () => {
+    // T3 is the boundary group — rows 3 and 4 are in this page, but a 5th row at
+    // T3 may have been cut off by the cap, so T3 must not be stepped over.
+    const res = deltaWindow([view(1, T1), view(2, T2), view(3, T3), view(4, T3)], 4);
+    expect(res.views.map((v) => v.id)).toEqual([1, 2]);
+    expect(res.cursor).toBe(T2);
+  });
+
+  it("at the cap with a single trailing row: still re-fetches that row's timestamp", () => {
+    const res = deltaWindow([view(1, T1), view(2, T2), view(3, T3)], 3);
+    expect(res.views.map((v) => v.id)).toEqual([1, 2]);
+    expect(res.cursor).toBe(T2);
+  });
+
+  it("degenerate: a full page sharing ONE timestamp still advances (progress beats the theoretical gap)", () => {
+    // Trimming would empty the page and pin the cursor forever, so the whole page
+    // is returned and the cursor advances past that timestamp.
+    const res = deltaWindow([view(1, T1), view(2, T1), view(3, T1)], 3);
+    expect(res.views.map((v) => v.id)).toEqual([1, 2, 3]);
+    expect(res.cursor).toBe(T1);
+  });
+
+  it("never returns a cursor older than the newest row it kept", () => {
+    const res = deltaWindow([view(1, T1), view(2, T2), view(3, T3)], 3);
+    const kept = res.views.map((v) => v.updatedAt);
+    expect(res.cursor).toBe(kept[kept.length - 1]);
   });
 });

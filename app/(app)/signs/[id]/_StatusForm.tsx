@@ -10,6 +10,7 @@
 import { useRef, useState } from "react";
 
 import type { SignStatus } from "@/app/generated/prisma/client";
+import type { SignStatusValue } from "@/lib/deploy/contract";
 
 import { updateSignStatus } from "../actions";
 import { SIGN_STATUSES, statusBadgeClass } from "../_lib";
@@ -73,7 +74,9 @@ export function StatusForm({
           if (sync && choice) {
             e.preventDefault();
             const form = e.currentTarget;
-            sync.enqueue(signId, choice, notes).then(
+            // choice is picked from the SIGN_STATUSES options (lifecycle only,
+            // never `archived`), so it's always a syncable status value.
+            sync.enqueue(signId, choice as SignStatusValue, notes).then(
               () => {
                 setChoice("");
                 setNotes("");

@@ -1,6 +1,7 @@
 import { ApiError, apiError, requireApiSession } from "@/lib/deploy/api-session";
 import { streamDeployPhoto } from "@/lib/deploy/blob";
 import { prisma } from "@/lib/db";
+import { logError } from "@/lib/log";
 
 // GET /api/native/photos/sign/[signId] — stream a sign's latest deploy photo,
 // auth-gated. The DB stores a private Blob pathname; this route streams it
@@ -13,7 +14,7 @@ export async function GET(
     await requireApiSession();
   } catch (err) {
     if (err instanceof ApiError) return apiError(err.status, err.message);
-    console.error("/api/native photo session check failed", err);
+    logError("api.native.sign-photo.session-check", err);
     return apiError(500, "internal error");
   }
   const { signId } = await params;
