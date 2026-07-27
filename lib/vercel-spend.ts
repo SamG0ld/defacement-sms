@@ -6,7 +6,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 // instead of running an open-ended bill against the card. Everything here is pure
 // + fetch-only (no @vercel/sdk dependency) so the verification/routing logic is
 // unit-testable without the network. Consumed by app/api/webhooks/vercel-spend.
-// See RUNBOOK.md → "Denial-of-wallet / spend controls".
+// See DEPLOY.md → "Spend kill-switch — Vercel Spend Management".
 
 // Vercel signs webhook payloads with HMAC-SHA1 of the RAW request body, hex-
 // encoded, in the `x-vercel-signature` header (Vercel "securing webhooks" doc).

@@ -13,8 +13,9 @@ workflow with a database-backed web app.
 | Styling | Tailwind CSS v4 |
 | Auth | NextAuth v5 (JWT sessions) — Google OAuth + passwordless magic-link email (Resend) |
 | ORM | Prisma 7 (`@prisma/adapter-pg` driver adapter) |
-| Database | PostgreSQL (e.g. [Neon](https://neon.tech) serverless, or any Postgres) |
+| Database | PostgreSQL (any managed Postgres) |
 | Rate limiting | Upstash Redis (optional in dev) |
+| Error monitoring | Sentry (optional off Vercel; required on Vercel deploys) |
 | Hosting (target) | Vercel + a managed Postgres |
 
 ## What's built
@@ -102,14 +103,46 @@ workflow with a database-backed web app.
 - **Login audit history** — `/activity` → **Logins** tab (admin-only) records successful and denied
   sign-in attempts with coarse location (Vercel edge geo headers, no raw IP), device type, and
   sign-in method. Login records older than 90 days are auto-purged daily by a scheduled Vercel Cron job.
+- **Generation by sign size** — batches, export, and a per-size record view (`/signs/by-size`) so a
+  print run is organised the way the printer actually needs it, with a resize-drift diagnostic that
+  flags signs whose size no longer matches their batch.
+- **Figma reconcile** — a per-size manifest that matches the app's records against the rendered
+  Figma file, surfacing stale/orphan nodes and text-edit corrections instead of silently drifting.
+  Batch URLs are canonicalised on save so the per-size view and reconcile dedup by file.
+- **Reversible soft-remove** — removing a generated sign sets an `archived` tombstone rather than
+  deleting it, so a removal can be restored. The add/remove/move engine treats a tombstone plus a
+  live re-add as the intended end state, not a double-create.
+- **Master-sheet reconcile** — signs sourced from the master planning sheet carry a provenance tag
+  and a stable sheet identity, so a re-import reconciles (add / remove / move) against what is
+  already there instead of duplicating it. Concurrent applies are locked and re-authorised.
+- **Sign Format as single source of truth** — a format picker, bulk set-format, and a
+  format-mismatch audit, with format and size changes recorded on the per-sign change-history
+  timeline.
+- **QM stock** — check-out of stock signs, grouped stock UI, and an all-venue standing-sign layer
+  (Code of Conduct, policy, wayfinding and venue maps) seeded as individually trackable rows.
+- **Specialty bulk intake** (`/signs/specialty`) — a dedicated entry path for floor/wall graphics,
+  venue maps and sticker walls, which the sheet importer deliberately skips.
+- **Hardware lifecycle** — three-state hardware tracking including return at strike time, plus
+  received-quantity and type-change handling on intake.
+- **Room mapping** — room-code normalisation (preventing variant-spelling duplicates), a Room
+  column that round-trips through export/import, and bulk auto-pin of signs to rooms by room code.
+- **Floor maps** — delete support and resolution-aware deep zoom for large venue plans.
+- **Error monitoring & observability** — Sentry wired into the server, edge, and browser runtimes
+  behind a structured error funnel, with URL/header/body scrubbing so tokens and user data never
+  reach the wire. Unset = complete no-op; required on Vercel deploys so it can't silently ship off.
+- **Denial-of-wallet defenses** — the Next.js image optimizer is disabled outright (nothing uses
+  `next/image`), request bodies are capped, and a signed Vercel Spend Management webhook can
+  auto-pause the project at 100% spend so a runaway spike 503s instead of running up the bill.
+- **Link previews** — an Open Graph / Twitter card so shared links unfurl with a proper title,
+  description and image.
 
 ## Getting started
 
 ### Prerequisites
 
-- Node.js 20+ (developed on 24)
-- A PostgreSQL database — a free [Neon](https://neon.tech) project is one easy option, but any
-  Postgres works (including a local Docker container)
+- Node.js 22 (see `.nvmrc`; `engines` pins 22.x)
+- A PostgreSQL database — any managed Postgres works, including a local Docker
+  container
 - A Google OAuth 2.0 client (for login)
 
 ### Setup
@@ -200,17 +233,26 @@ app/
   (app)/         Authenticated area (layout gates on session.isActive)
     page.tsx     Dashboard (status counts, deployment progress, due/overdue)
     signs/       List/detail/CRUD, status workflow, bulk multi-select, import wizard, export, admin manage
+      by-size/   Per-size record view + print manifest + resize-drift diagnostic
+      generate/  Generation batches + render-ready handoff CSV + Figma previews
+      reconcile/ Master-sheet add/remove/move reconcile
+      specialty/ Bulk intake for floor/wall graphics, venue maps, sticker walls
+      pin/       Bulk auto-pin signs to rooms by room code
     inventory/   Equipment counts + year-over-year + derived print summary
     deploy/      Offline-first field-deployment PWA
     map/         Floor-map sign placement
-    activity/    Admin/lead activity + deploy log
+    activity/    Admin/lead activity + deploy log + login audit
     users/       Admin user management
   (public)/
-    login/       Google sign-in
+    login/       Landing "door" → Google sign-in + magic-link email
   api/auth/      NextAuth route handler
   api/native/    JSON API backing the deploy PWA (claims, crews, sync, photos)
   api/health/    Health check
+  api/ready/     Readiness probe
   api/maps/      Floor-map image serving
+  api/cron/      Scheduled jobs (login-audit retention purge)
+  api/webhooks/  Vercel Spend Management auto-pause kill-switch
+  api/csp-report/ CSP violation reports (rate-capped)
 lib/
   auth.ts        NextAuth config — callbacks, kill-switch, redirect guard
   db.ts          Prisma client singleton (pg driver adapter)
@@ -245,6 +287,15 @@ export, and a per-user session kill-switch are in place. Server-side authorizati
 in `lib/rbac.ts` (`requireSession` / `requireRole`). Secrets live only in `.env` (gitignored);
 `.env.example` is the documented source of truth for variable names.
 
+Additional hardening: the rate limiters key on a client IP derived from the *right* of
+`x-forwarded-for` (`lib/client-ip.ts`, `TRUST_PROXY_DEPTH`) so the header can't be rotated to win a
+fresh budget; the sign-in path throttles the login Server Actions themselves, avoids roster
+enumeration, and re-reads roles rather than trusting a stale token; mutation paths lock,
+re-authorize, and guard against archived-row resurrection and concurrent double-creates; request
+bodies are capped; a production boot fails loudly rather than silently shipping with rate limiting,
+CSP enforcement, or error reporting switched off; and Sentry events are scrubbed of URLs, headers
+and bodies so tokens and user data never leave the process.
+
 ## Testing
 
 Three layers, run in CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) on every push/PR:
@@ -260,8 +311,9 @@ Three layers, run in CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md). In short: auth, the data model, the core domain UI, and the
-offline-first deploy PWA are done. What's left is the **sign-art generation pipeline** and
+See [ROADMAP.md](ROADMAP.md). In short: auth, the data model, the core domain UI, the
+offline-first deploy PWA, and the generation/reconcile workflow (batches, per-size manifests,
+Figma reconcile) are done. What's left is the **sign-art rendering step** itself and
 **production deployment** (see [DEPLOY.md](DEPLOY.md)). A native iOS client on the same API is
 designed but deferred — the web PWA is the con-critical deliverable.
 

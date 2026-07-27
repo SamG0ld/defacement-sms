@@ -1,6 +1,6 @@
 # Deploy runbook — Defacement SMS
 
-Target stack: **Vercel** (Next.js) + a managed **Postgres** (e.g. Neon) + **Upstash** (Redis rate
+Target stack: **Vercel** (Next.js) + a managed **Postgres** + **Upstash** (Redis rate
 limiting) + **Google OAuth**. Do these in order. Steps marked **(you)** are interactive and can't
 be scripted.
 
@@ -9,7 +9,8 @@ be scripted.
 > `<placeholder>` below is something you fill in with your own value.
 
 ## 1. Postgres database **(you)**
-1. Create a Postgres database named `defacement` (a free Neon project works well).
+1. Create a Postgres database named `defacement` (any managed Postgres with a
+   pooled endpoint works; a free tier is plenty to start).
 2. Copy two connection strings:
    - **Pooled** (has `-pooler`, `pgbouncer=true`) → `DATABASE_URL` (the app runtime).
    - **Direct** (unpooled) → `DIRECT_URL` (migrations).
@@ -59,6 +60,8 @@ production — that's local test data.
      (`BLOB_STORE_ID`, auto-injected when you connect the store in step 4b) **or** a static
      `BLOB_READ_WRITE_TOKEN`
    - `CRON_SECRET` — generate: `openssl rand -base64 32`; **optional** (not required at startup) — enables the daily login-audit retention purge; the purge route 401s without it (see step 4c)
+   - `SENTRY_DSN`, `NEXT_PUBLIC_SENTRY_DSN` — **required on Vercel**; the deploy refuses to boot
+     without both (see step 4d)
    - `BOOTSTRAP_ADMIN_EMAILS` — comma-separated admin emails
    - `CSP_MODE=report` for the first deploy (flip to `enforce` in step 7)
    - `FIGMA_API_TOKEN` — *optional*; only needed for "Pull previews from Figma" on a generation
@@ -85,6 +88,78 @@ A daily Vercel Cron job (`/api/cron/purge-login-audit`, defined in `vercel.json`
 records older than 90 days, keeping admin audit history intact.
 1. Ensure `CRON_SECRET` is set in the Vercel project env (step 4, list item `CRON_SECRET`).
 2. No additional setup needed — Vercel auto-detects the `crons` array in `vercel.json` on deploy.
+
+## 4d. Error monitoring — Sentry **(you)** — **required on Vercel**
+Unset is a complete no-op (no SDK init, nothing sent) in dev and on a self-hosted deploy — but on
+**Vercel** both DSNs are required: `assertProdEnv()` (`lib/env.ts`) refuses to boot a prod **or
+preview** deploy where either is missing or unparseable, so observability can't silently ship off.
+That check is **skipped in the edge runtime** (and runs everywhere else) — a throw there would fail
+every request `proxy.ts` matches.
+
+> **Paste the DSN, don't pipe it.** A leading byte-order mark (U+FEFF) makes a DSN *truthy but
+> unparseable*: `Sentry.init` accepts it, reports `enabled: true`, and drops every event, while
+> `lib/csp.ts` quietly omits the ingest origin — a failure mode that looks exactly like "no errors".
+> PowerShell's `Out-File` / `>` write UTF-8 **with** a BOM, so never redirect a DSN into a file and
+> paste from it. `lib/sentry-dsn.ts` trims it defensively and warns (`scope: sentry.dsn-invalid`)
+> instead of failing silently, but keep the stored value clean.
+1. Create a Sentry project (<https://sentry.io> → New Project → **Next.js**).
+2. Set **both** vars in the Vercel env to the project **DSN** (same value; all environments — previews
+   run as production too):
+   - `SENTRY_DSN` — server + edge errors: uncaught 500s (`instrumentation.ts` `onRequestError`) and
+     everything via `lib/log.ts` `logError` (DB / Upstash / Blob / email / Cron failures, the
+     rate-limiter fail-open, `/api/native/*` 500s).
+   - `NEXT_PUBLIC_SENTRY_DSN` — **browser** errors users actually hit (unhandled exceptions/rejections
+     + the React error boundaries), tagged with the acting user's opaque id. This is also the DSN the
+     **edge** runtime actually uses: only `NEXT_PUBLIC_*` is inlined into the middleware bundle at
+     build time, so it is the one that reliably reaches `proxy.ts`. Because it is baked in at build,
+     changing it requires a **redeploy**, not just a dashboard save.
+3. Redeploy, then set an alert rule on new issues / 5xx spikes. Pair with an external uptime check on
+   `/api/ready` (DB-readiness — returns 503 when Postgres is unreachable, so a post-startup DB
+   outage trips the monitor) for outside-in coverage; `/api/health` remains pure liveness.
+   > `lib/csp.ts` auto-allows the DSN's ingest origin in `connect-src` (derived from whichever DSN
+   > resolves) so the browser can POST events — no manual CSP edit. This matters more once `CSP_MODE`
+   > flips to `enforce`: a missing ingest origin stops being cosmetic and starts **blocking** the POST.
+   > Source maps aren't uploaded (no `withSentryConfig`), so stack traces point at compiled code —
+   > fine for alerting; add it later for readable frames. **Before adopting `withSentryConfig`**, note
+   > it applies Next's middleware wrapper, which attaches full request data to events — re-check
+   > `lib/sentry-privacy.ts` still strips cookies/headers first (`sendDefaultPii: false` alone does
+   > **not**; see that file for the measured detail).
+
+## 4e. Web Analytics — Vercel **(you)** — optional
+Client-side page-view stats (visitors, top pages, referrers). The `<Analytics />` component
+(`@vercel/analytics/next`, in `app/layout.tsx`) ships in every build but stays a **no-op until you
+flip the dashboard toggle** — with it off the loader endpoint 404s and the SDK silently does nothing.
+1. Deploy this code, then in the Vercel project open **Analytics** → **Enable Web Analytics**.
+2. Data appears in the Analytics tab within a few minutes of the next real visit. No env var, no redeploy.
+   > **No CSP edit needed.** The loader injects its script via `document.createElement` from the app's
+   > already-nonced bundle, so `script-src … 'strict-dynamic'` (`lib/csp.ts`) trusts it by propagation;
+   > script and beacon are same-origin under `/_vercel/insights/*`, already covered by `connect-src
+   > 'self'`. Same single-CSP-source rule as Sentry (4d) — nothing to allowlist.
+   > **Privacy:** cookieless, and it reports the **pathname only** (no query string). Authenticated
+   > internal paths like `/signs/42` (the id is an autoincrement int, not PII) are visible to Vercel;
+   > query params (`?callbackUrl`, `?token`, …) are never sent. To suppress internal paths entirely,
+   > add a `beforeSend` handler or scope `<Analytics />` to public routes.
+
+## 4f. Spend kill-switch — Vercel Spend Management **(you)** — optional
+A denial-of-wallet backstop: a signed Spend Management webhook (`/api/webhooks/vercel-spend`) that
+pauses the project when spend hits 100%, so a runaway spike 503s the site instead of running up the
+card. All of it is optional — the route **fails closed (401)** without the secret, so an unset
+deploy simply can't self-pause. Vercel's own "pause production" spend toggle is the primary
+kill-switch; this webhook is the observable backstop that also records why.
+1. Vercel → Account/Team → **Billing** → **Spend Management** → create a webhook pointing at
+   `https://<your-domain>/api/webhooks/vercel-spend`. Copy the signing secret to
+   `VERCEL_WEBHOOK_SECRET` — the route verifies the `x-vercel-signature` HMAC-SHA1 and rejects
+   anything that doesn't match.
+2. Set `VERCEL_API_TOKEN` (Account Settings → Tokens, least scope that can pause the project),
+   `VERCEL_PROJECT_IDS` (comma-separated, e.g. `prj_abc,prj_def`), and `VERCEL_TEAM_ID` (omit for a
+   personal account).
+3. Optionally set `SPEND_ALERT_EMAIL` to also get an email when the switch trips (best-effort, on
+   top of Vercel's native spend alert; reuses the Resend setup from step 5b). Unset = log only.
+   > The app also disables Next's image optimizer outright (`images: { unoptimized: true }` in
+   > `next.config.ts`) — nothing imports `next/image`, so leaving `/_next/image` live would only
+   > offer an unauthenticated endpoint to drive billed transforms. If the art pipeline ever adopts
+   > `next/image`, re-enable it **with** `qualities`, `deviceSizes`/`imageSizes`, `localPatterns`,
+   > `remotePatterns: []` and `dangerouslyAllowSVG: false` rather than just deleting the line.
 
 ## 5. Google OAuth **(you)**
 Google Cloud Console → APIs & Services → Credentials → your OAuth client →

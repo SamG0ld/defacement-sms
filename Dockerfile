@@ -13,12 +13,11 @@ COPY package.json package-lock.json ./
 # builder regenerates anyway, but the install itself must still succeed.
 COPY prisma ./prisma
 COPY prisma.config.ts ./
-# `npm install` (not `npm ci`): the lockfile's optional wasm deps for Tailwind v4's
-# native engine (@tailwindcss/oxide → @emnapi/*) don't reconcile under strict `npm ci`
-# across npm versions (lock written by npm 11, image runs npm 10). install resolves
-# the tree fresh and is reliable here. Follow-up: standardize node/npm across
-# local/CI/Docker and return to `npm ci`.
-RUN npm install --no-audit --no-fund
+# Deterministic install from the lockfile. This requires the lockfile to record
+# every platform's optional deps (Tailwind v4's native engine, @tailwindcss/oxide →
+# @emnapi/*) — regenerate it on Node 22 if `npm ci` starts failing to reconcile
+# them. Node is standardized on 22 across local/CI/Docker (.nvmrc, engines).
+RUN npm ci --no-audit --no-fund
 
 # ---- builder: generate the Prisma client + build the standalone server --------
 FROM node:22-slim AS builder
@@ -31,10 +30,13 @@ RUN npx prisma generate
 # throws without DATABASE_URL, which breaks page-data collection (the Docker build
 # has no .env). Server env is NOT inlined into the bundle (only NEXT_PUBLIC_*), so
 # these throwaway values never reach runtime — the container's real env does.
-ENV DATABASE_URL="postgresql://build:build@localhost:5432/build"
-ENV AUTH_SECRET="build-only-placeholder-not-used-at-runtime"
+# Inlined on the RUN (not ARG/ENV): Docker's SecretsUsedInArgOrEnv check flags a
+# secret-looking name in EITHER instruction, and these throwaway values only need
+# to exist for this one command.
 # output: "standalone" (next.config.ts) emits .next/standalone/server.js
-RUN npm run build
+RUN DATABASE_URL="postgresql://build:build@localhost:5432/build" \
+    AUTH_SECRET="build-only-placeholder-not-used-at-runtime" \
+    npm run build
 
 # ---- runner: minimal runtime image -------------------------------------------
 FROM node:22-slim AS runner

@@ -37,7 +37,7 @@ credentials.json
 # Vercel
 .vercel
 
-# Neon (neonctl local project state)
+# Local database CLI project state
 .neon
 
 # IDE and tools

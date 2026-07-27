@@ -193,13 +193,13 @@ export async function sendSpendAlertEmail(
       `Paused project(s): ${projects}`,
       "",
       "The site is now paused (503) to stop further billing. Resuming is a",
-      "deliberate manual step once you've confirmed the spike is over — see RUNBOOK.md.",
+      "deliberate manual step once you've confirmed the spike is over — see DEPLOY.md.",
     ].join("\n"),
     html: `<!doctype html><html><body style="font-family:system-ui,sans-serif;line-height:1.5;color:#18181b">
 <h2 style="margin:0 0 12px">Vercel spend cap reached — site auto-paused</h2>
 <p>${safeReason}</p>
 <p><strong>Paused project(s):</strong> ${safeProjects}</p>
-<p>The site is now paused (503) to stop further billing. Resuming is a deliberate manual step once you've confirmed the spike is over — see RUNBOOK.md.</p>
+<p>The site is now paused (503) to stop further billing. Resuming is a deliberate manual step once you've confirmed the spike is over — see DEPLOY.md.</p>
 </body></html>`,
   });
 }
