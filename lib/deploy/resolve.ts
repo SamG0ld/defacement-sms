@@ -10,6 +10,7 @@ import type {
   ClaimResponse,
   DeployEventInput,
   DeployResult,
+  DeploySignView,
   SetSignStatusResult,
 } from "@/lib/deploy/contract";
 
@@ -138,6 +139,55 @@ export function classifyDeploys(
 
   const applyClientIds = new Set(toApply.map((e) => e.clientId));
   return { toApply, toLogConflict, applyClientIds, results };
+}
+
+// ── Sync (delta cursor) ───────────────────────────────────────────────────────
+
+export type DeltaWindow = {
+  // The rows to actually return — may be shorter than the input (see below).
+  views: DeploySignView[];
+  // The watermark to hand back, or null when there was nothing to derive one
+  // from (the caller keeps its own).
+  cursor: string | null;
+  // The query hit its `take` cap, so this page is a truncated view of the
+  // matching set. Never true at real con scale; the caller logs it if it is.
+  capped: boolean;
+};
+
+// Derive the delta cursor for a page of signs, safely under a `take` cap.
+//
+// The cursor is a bare `updatedAt` ISO string (the wire contract's `since` is a
+// single timestamp, shared with the iOS client), and the next call filters with a
+// strict `updatedAt > since`. That is only lossless while the page contains EVERY
+// row at its newest timestamp — if the cap truncated a group of rows sharing the
+// max `updatedAt`, advancing to that timestamp would step over the ones that were
+// cut, and `gt` means they'd never be pulled again (#215).
+//
+// So: when the page is short of the cap, nothing was truncated and the cursor is
+// simply the max. When the page is exactly at the cap, the newest timestamp group
+// may be only partly present, so those rows are held back and the cursor stops
+// just short of them — the next call re-fetches that whole group.
+//
+// The one case that can't be made lossless is a full page whose rows ALL share a
+// single timestamp: holding them back would leave nothing and pin the cursor
+// forever, so the page is returned whole and the cursor advances. Liveness beats a
+// gap that needs >cap signs written in the same millisecond.
+export function deltaWindow(views: DeploySignView[], cap: number): DeltaWindow {
+  if (views.length === 0) return { views, cursor: null, capped: false };
+
+  const maxOf = (rows: DeploySignView[]) =>
+    rows.reduce((m, v) => (v.updatedAt > m ? v.updatedAt : m), rows[0].updatedAt);
+  const boundary = maxOf(views);
+
+  // A page shorter than the cap provably wasn't truncated. A page exactly AT the
+  // cap might not have been either (the matching set could be exactly `cap` rows),
+  // but that's indistinguishable from here — so it's treated as truncated, costing
+  // at most one extra round trip to converge. Safe direction: never skip a row.
+  if (views.length < cap) return { views, cursor: boundary, capped: false };
+
+  const kept = views.filter((v) => v.updatedAt !== boundary);
+  if (kept.length === 0) return { views, cursor: boundary, capped: true };
+  return { views: kept, cursor: maxOf(kept), capped: true };
 }
 
 // ── Sign status (single offline-queued change) ────────────────────────────────

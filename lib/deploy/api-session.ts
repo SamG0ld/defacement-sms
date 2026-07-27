@@ -14,6 +14,7 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 
 import { auth } from "@/lib/auth";
+import { logError } from "@/lib/log";
 import { checkNativeRateLimit } from "@/lib/ratelimit";
 import { assertSameOrigin } from "@/lib/deploy/api-guards";
 import { ApiError, type ApiActor } from "@/lib/deploy/api-types";
@@ -33,8 +34,14 @@ export type { ApiActor } from "@/lib/deploy/api-types";
 // takes the floor sync down; the client treats the 429 as retryable.
 export async function requireApiSession(): Promise<ApiActor> {
   const session = await auth();
-  if (!session?.user?.id || !session.user.isActive) {
+  if (!session?.user?.id) {
     throw new ApiError(401, "unauthorized");
+  }
+  // A deactivated account is a PERMANENT refusal, not auth-expiry. 401 would make
+  // both sync engines treat it as transient and retry the outbox forever (#79);
+  // 403 maps to `permanent` → the drain dead-letters the entry instead.
+  if (!session.user.isActive) {
+    throw new ApiError(403, "account deactivated");
   }
   const limit = await checkNativeRateLimit(session.user.id);
   if (!limit.success) {
@@ -78,7 +85,9 @@ export async function runApi(
         { status: 400 },
       );
     }
-    console.error("/api/native error", err);
+    // Central catch for every /api/native/* route — one scope covers the whole
+    // field-sync API surface.
+    logError("api.native.unhandled", err);
     return apiError(500, "internal error");
   }
 }

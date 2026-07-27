@@ -1,6 +1,7 @@
 -- AlterTable: the master sheet's stable Name identifier (M18 reconcile matches on
 -- item_id + sheet_name). NULL for non-sheet signs. IF NOT EXISTS so the whole
--- migration is re-runnable (it's hand-applied to Neon on the paved prod path).
+-- migration is re-runnable (it's hand-applied to the managed Postgres on the
+-- paved prod path).
 ALTER TABLE "signs" ADD COLUMN IF NOT EXISTS "sheet_name" TEXT;
 
 -- ---------------------------------------------------------------------------

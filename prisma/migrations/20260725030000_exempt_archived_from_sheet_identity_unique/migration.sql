@@ -38,7 +38,7 @@
 --      ~1ms even while another session holds SHARE ROW EXCLUSIVE on `signs`.)
 -- Where `migrate deploy` runs automatically at container start, that surfaces loudly
 -- (P3009 restart loop, app down, no writes possible). Where migrations are instead run
--- by hand against Neon while the app is live (DEPLOY.md), it does not:
+-- by hand against the managed Postgres while the app is live (DEPLOY.md), it does not:
 -- the app stays UP and serving writes with this guard silently absent, no alert and no
 -- symptom. It does not self-heal — recovery is hand-reconciling prod data before any
 -- retry can succeed.

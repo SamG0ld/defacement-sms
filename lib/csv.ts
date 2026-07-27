@@ -10,6 +10,12 @@ export function parseCsv(text: string): string[][] {
   let row: string[] = [];
   let field = "";
   let inQuotes = false;
+  // RFC 4180 (what Excel/Sheets emit) only treats a `"` as field quoting when it
+  // opens the field. A quote further in is literal data — and the app's own size
+  // vocabulary is inch marks (22"x28", 24"x36"), so a hand-edited or non-Excel CSV
+  // carries them routinely. Reading those as quoting used to swallow the rest of the
+  // row — and, across an embedded newline, the whole row after it — into one field.
+  let atFieldStart = true;
   let i = 0;
 
   while (i < text.length) {
@@ -35,14 +41,16 @@ export function parseCsv(text: string): string[][] {
       continue;
     }
 
-    if (c === '"') {
+    if (c === '"' && atFieldStart) {
       inQuotes = true;
+      atFieldStart = false;
       i++;
       continue;
     }
     if (c === ",") {
       row.push(field);
       field = "";
+      atFieldStart = true;
       i++;
       continue;
     }
@@ -57,6 +65,7 @@ export function parseCsv(text: string): string[][] {
       rows.push(row);
       row = [];
       field = "";
+      atFieldStart = true;
       i++;
       continue;
     }
@@ -65,19 +74,22 @@ export function parseCsv(text: string): string[][] {
       rows.push(row);
       row = [];
       field = "";
+      atFieldStart = true;
       i++;
       continue;
     }
-    // Plain run: extend to the next delimiter in one slice. Starting at i + 1
-    // is safe because the guards above already excluded every delimiter/quote
-    // as `c` — keep that invariant if adding branches above.
+    // Plain run: extend to the next delimiter in one slice. `"` is deliberately NOT
+    // a break char here — everything from `i` on is mid-field, so a quote in the run
+    // is literal text. Starting at i + 1 is safe because the guards above already
+    // excluded every delimiter as `c` — keep that invariant if adding branches above.
     let j = i + 1;
     while (j < text.length) {
       const ch = text[j];
-      if (ch === '"' || ch === "," || ch === "\r" || ch === "\n") break;
+      if (ch === "," || ch === "\r" || ch === "\n") break;
       j++;
     }
     field += text.slice(i, j);
+    atFieldStart = false;
     i = j;
   }
 
@@ -94,12 +106,30 @@ export function parseCsv(text: string): string[][] {
 // `=HYPERLINK(...)` would execute when someone opens the exported file. Prefix a
 // single quote to force the cell to be read as text. Applied only on serialize
 // (export) — parseCsv stays faithful so re-imports aren't corrupted.
+//
+// The leading-quote RUN in the pattern is what makes the guard REVERSIBLE: a value
+// that already starts with apostrophes then a formula char (`'=SUM`, the user's own
+// apostrophe) is indistinguishable from a guarded `=SUM` once written, so it earns
+// its own guard quote too. stripFormulaGuard then takes exactly one back off and the
+// round-trip is lossless. Values like `'24 reunion` (apostrophe, then a non-formula
+// char) are never guarded and never stripped.
 function neutralizeFormula(s: string): string {
-  return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  return /^'*[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+}
+
+// Inverse of neutralizeFormula — strip the guard quote back off on import so it
+// never lands in the DB or renders on a sign face. Lives here, beside the guard it
+// undoes: the two only stay correct if they move together, and keeping separate
+// copies in the importers is exactly how they drifted apart before.
+export function stripFormulaGuard(s: string): string {
+  return /^'+[=+\-@\t\r]/.test(s) ? s.slice(1) : s;
 }
 
 function escapeField(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return "";
+  // Order is load-bearing: neutralize BEFORE the RFC-4180 quoting, so the guard quote
+  // ends up inside the quotes and survives the spreadsheet's unquote. Quoting first
+  // would leave the formula char as the cell's first character again.
   const s = neutralizeFormula(String(value));
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }

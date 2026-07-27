@@ -27,7 +27,34 @@ const SIGN_MATERIAL_CATEGORY = "sign material";
 // not in ASSET_CATEGORIES is treated as a consumable.
 export const CATEGORY_OPTIONS = [...ASSET_CATEGORIES, "Consumable"] as const;
 
+// Every category this app knows how to file. Superset of CATEGORY_OPTIONS: the
+// six sign-material rows are seeded (prisma/seeds/equipment-types.sql), not
+// user-created, so 'Sign Material' is never offered in the picker but is still a
+// legitimate stored value. This is the allowlist the write path validates
+// against (app/(app)/inventory/actions.ts).
+export const KNOWN_CATEGORIES = [
+  ...CATEGORY_OPTIONS,
+  "Sign Material",
+] as const;
+
 const ASSET_SET = new Set<string>(ASSET_CATEGORIES.map((c) => c.toLowerCase()));
+
+const CANONICAL_BY_LOWER = new Map<string, string>(
+  KNOWN_CATEGORIES.map((c) => [c.toLowerCase(), c]),
+);
+
+// The canonical spelling of a known category, or null when the value is blank or
+// genuinely unfamiliar. Case/whitespace-insensitive like classifyKind — a row
+// stored as "easel" is the same category as "Easel", and must not fragment the
+// reconciliation into two buckets (#229). "Easels" (plural) is NOT the same
+// category: only exact-ignoring-case matches canonicalize.
+export function canonicalCategory(
+  category: string | null | undefined,
+): string | null {
+  const c = (category ?? "").trim().toLowerCase();
+  if (!c) return null;
+  return CANONICAL_BY_LOWER.get(c) ?? null;
+}
 
 // Classify an equipment type by its (free-text) category into one of the three
 // page sections. Unknown / blank / custom categories are consumables.
@@ -78,12 +105,17 @@ export function reconcileAssets(
   items: AssetItem[],
   derivedNeed: Record<string, number> = {},
 ): CategoryReconciliation[] {
+  // Group on the CANONICAL category, not the stored string: a row saved as
+  // "easel" must reconcile against derivedNeed's "Easel" instead of splitting
+  // off into a bucket with an unknown need (#229). Unknown/custom categories
+  // keep their stored spelling as their own bucket.
   const byCategory = new Map<string, AssetItemResolved[]>();
   for (const item of items) {
     const resolved = { ...item, effectiveOnHand: effectiveOnHand(item) };
-    const list = byCategory.get(item.category);
+    const key = canonicalCategory(item.category) ?? item.category;
+    const list = byCategory.get(key);
     if (list) list.push(resolved);
-    else byCategory.set(item.category, [resolved]);
+    else byCategory.set(key, [resolved]);
   }
 
   // Stable display order: known asset categories first (ASSET_CATEGORIES order),

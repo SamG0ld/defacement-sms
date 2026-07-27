@@ -7,7 +7,11 @@ import { prisma } from "@/lib/db";
 import { withDbRetry } from "@/lib/db-retry";
 import { logError } from "@/lib/log";
 import { recordAudit } from "@/lib/audit";
-import { canReceiveMagicLink, sendMagicLinkEmail } from "@/lib/email";
+import {
+  canReceiveMagicLink,
+  equalizeMagicLinkLatency,
+  sendMagicLinkEmail,
+} from "@/lib/email";
 import { captureRequestContext } from "@/lib/request-context";
 import type { UserRole } from "@/app/generated/prisma/client";
 
@@ -52,20 +56,24 @@ const SOFT_FAIL_RECHECK_MS = 60 * 1000;
 // First-admin bootstrap. Emails listed in BOOTSTRAP_ADMIN_EMAILS may
 // self-provision as admin on first Google sign-in — the minimal unblock before
 // the invitation flow exists. Clear the var once invites are wired up.
+// Emit the prod-footgun warning at most once per process (M17 #58). The check
+// runs on every sign-in, so an unguarded warn would log the bootstrap state on
+// every attempt — a recon signal. Once is enough to flag the misconfig; we also
+// no longer log the address count (provisioning-state leak).
+let bootstrapWarned = false;
+
 function isBootstrapAdmin(email: string): boolean {
   const list = (process.env.BOOTSTRAP_ADMIN_EMAILS ?? "")
     .split(",")
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);
-  // Warn loudly if this var is still set in production — it's a footgun that
-  // should be cleared once real admins exist. Runs on every call that reaches
-  // this path (sign-in), which is rare enough to not be noisy.
-  if (process.env.NODE_ENV === "production" && list.length > 0) {
+  // Warn loudly (once) if this var is still set in production — it's a footgun
+  // that should be cleared once real admins exist.
+  if (process.env.NODE_ENV === "production" && list.length > 0 && !bootstrapWarned) {
+    bootstrapWarned = true;
     console.warn(
-      "[auth] BOOTSTRAP_ADMIN_EMAILS is still set in production (%d address%s). " +
+      "[auth] BOOTSTRAP_ADMIN_EMAILS is still set in production. " +
         "Clear it once you have at least one confirmed admin.",
-      list.length,
-      list.length === 1 ? "" : "es",
     );
   }
   return list.includes(email.toLowerCase());
@@ -112,19 +120,36 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           where: { email },
           select: { isActive: true },
         });
-        // Closed registration: only mail a known active user. Non-users still
-        // see the "check your inbox" screen (NextAuth already redirected) but
-        // get no email and no row is created — same UX, no enumeration via
-        // content.
+        // Closed registration: only mail a known active user — never create a
+        // row, never send to a stranger.
         //
-        // Accepted residual: the active-user path then awaits a network send,
-        // so its response is measurably slower than the early-return non-user
-        // path — a timing oracle for "is this address on the team?". Tolerated
-        // given the per-IP auth rate limit (proxy.ts) and a tiny known roster;
-        // equalizing would mean a fire-and-forget send that swallows real
-        // delivery errors, which is the worse trade here.
-        if (!canReceiveMagicLink(user)) return;
-        await sendMagicLinkEmail(email, url);
+        // Defense in depth, not the primary gate: @auth/core runs the signIn
+        // callback BEFORE this hook (lib/actions/signin/send-token.js), and that
+        // callback already rejects any non-team / deactivated address with
+        // AccessDenied. Reaching this branch takes a deactivation landing between
+        // those two independent reads, with no transaction spanning them — rare,
+        // but the check stays so the guarantee holds locally if that ordering
+        // ever changes.
+        //
+        // Enumeration (#227) is therefore NOT solved here: the observable
+        // difference is the AccessDenied rejection itself, which is normalized to
+        // the ordinary "link dispatched" screen in lib/sign-in.ts. The jitter
+        // below only keeps this path's latency comparable to a real send on the
+        // rare occasion it is reached. Volume is bounded by the per-IP limit the
+        // login Server Actions apply (lib/sign-in.ts, #173) — NOT by proxy.ts,
+        // which never covered this call path.
+        if (!canReceiveMagicLink(user)) {
+          await equalizeMagicLinkLatency();
+          return;
+        }
+        try {
+          await sendMagicLinkEmail(email, url);
+        } catch (err) {
+          // Durable signal that a teammate's sign-in link didn't go out — the
+          // user only ever sees "check your inbox". No raw email in the log/Sentry.
+          logError("email.magic-link-failed", err);
+          throw err;
+        }
       },
     }),
   ],
@@ -248,7 +273,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       const isSignIn =
         trigger === "signIn" || trigger === "signUp" || isInitial;
 
-      // Resilience: a Neon scale-to-zero cold start can refuse / time out the
+      // Resilience: a scale-to-zero database cold start can refuse / time out the
       // first connection after idle. withDbRetry retries that transient blip once
       // (the first attempt wakes the compute, the retry lands warm). A failure
       // that survives the retry is an infra outage — NOT an authoritative "no
@@ -288,15 +313,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // after SOFT_FAIL_RECHECK_MS instead of on every request (which would stall
         // each page load on the connect-retry during a sustained outage), while
         // still re-validating far sooner than the normal 1h staleness window once
-        // Neon recovers. A transient blip must not sign out the whole team mid-floor.
+        // the database recovers. A transient blip must not sign out the whole team mid-floor.
         return {
           ...token,
           lastChecked: Date.now() - REFRESH_INTERVAL_MS + SOFT_FAIL_RECHECK_MS,
         };
       }
 
+      // Revoked: drop to the lowest rank alongside isActive (#238). Spreading the
+      // prior token would keep whatever role was cached before deactivation, so a
+      // deactivated admin's token still *read* as admin. Every authz consumer
+      // checks isActive first (lib/rbac.ts, lib/page-guards.ts), so nothing is
+      // exploitable today — this is defense in depth for the next consumer that
+      // reaches for session.user.role without that check. "volunteer" is what the
+      // session callback already falls back to below.
       if (!dbUser || !dbUser.isActive) {
-        return { ...token, isActive: false };
+        return { ...token, isActive: false, role: "volunteer" };
       }
 
       // tokenVersion kill-switch — fail CLOSED. An established token (already
@@ -305,7 +337,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // the initial sign-in, when the version is being populated for the first
       // time.
       if (!isInitial && (token.tokenVersion ?? -1) !== dbUser.tokenVersion) {
-        return { ...token, isActive: false };
+        // Same stale-role reset as the branch above — a kill-switched token must
+        // not carry a privileged role either.
+        return { ...token, isActive: false, role: "volunteer" };
       }
 
       // First-admin bootstrap: promote a configured email to admin exactly
