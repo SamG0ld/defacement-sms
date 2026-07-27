@@ -112,6 +112,14 @@ enum SignStatus {
   // (signs/_lib.ts) — never the enum's internal order — drives display + ranking.
   handed_off
   installed
+  // Soft-removed from the per-size record (the DC34 add/remove/move engine). A
+  // sign reaches this ONLY via the gated archive action (remove-actions.ts) and
+  // ONLY from pending/generated — never a normal lifecycle target. Deliberately
+  // NOT in SIGN_STATUSES (signs/_lib.ts): it's excluded from every status picker,
+  // the offline-sync working set, and rank math for free, and buildSignWhere
+  // hides it from the default list. Restore reads the prior status back from
+  // StatusHistory. Appended last (ALTER TYPE ADD VALUE appends).
+  archived
 }
 
 // Physical item class. Distinct classes have distinct counting + hardware rules:
@@ -209,33 +217,6 @@ model Location {
   @@map("locations")
 }
 
-model SignTemplate {
-  id               Int      @id @default(autoincrement())
-  templateName     String   @map("template_name")
-  signType         String?  @map("sign_type")
-  basePsdPath      String?  @map("base_psd_path")
-  widthInches      Decimal? @map("width_inches") @db.Decimal(6, 2)
-  heightInches     Decimal? @map("height_inches") @db.Decimal(6, 2)
-  textLayerName    String?  @map("text_layer_name")
-  fontName         String?  @map("font_name")
-  fontSizeMax      Int?     @map("font_size_max")
-  fontSizeMin      Int?     @map("font_size_min")
-  textColor        String?  @map("text_color")
-  textAlignment    String?  @map("text_alignment")
-  figmaFileKey     String?  @map("figma_file_key")
-  figmaComponentId String?  @map("figma_component_id")
-  figmaTextNodeIds String?  @map("figma_text_node_ids")
-  figmaPageId      String?  @map("figma_page_id")
-  textZones        String?  @map("text_zones")
-  configJson       String?  @map("config_json")
-  isActive         Boolean  @default(true) @map("is_active")
-  createdAt        DateTime @default(now()) @map("created_at")
-
-  signs Sign[]
-
-  @@map("sign_templates")
-}
-
 // A generation batch: one "Generate" action over a selection of signs. The app
 // is the system-of-record for the generation lifecycle — it doesn't render the
 // art (that's the Figma/Python step), it records who generated which signs when,
@@ -264,6 +245,16 @@ model Sign {
   id       Int    @id @default(autoincrement())
   itemId   String @map("item_id")
   signText String @map("sign_text")
+  // Back-face text for a double-sided board whose two faces differ (same artwork,
+  // different words — e.g. workshop signs). NULL = same text both sides (the common
+  // case, unchanged). Only meaningful when doubleSided; the form clears it otherwise.
+  backText String? @map("back_text")
+  // The master sheet's Name for this space — the STABLE identifier the M18
+  // reconcile matches on (itemId + sheetName), kept distinct from signText (the
+  // PRINTED text, which a sheet "text should be X" override can change). NULL for
+  // non-sheet signs (all-venue standing signs, hand-added wayfinding), which the
+  // `master-sheet` tag also keeps out of reconcile. See plans/m18-sheet-reconcile.md.
+  sheetName String? @map("sheet_name")
   signType String @map("sign_type")
 
   // Request tracking
@@ -272,16 +263,24 @@ model Sign {
   requestDate    DateTime @default(now()) @map("request_date")
 
   // Specifications
-  size        String
-  quantity    Int          @default(1)
-  doubleSided Boolean      @default(false) @map("double_sided")
-  needsEasel  Boolean      @default(false) @map("needs_easel")
+  size          String
+  quantity      Int          @default(1)
+  // QM (quartermaster) checkout flag, per physical sign. NULL = still on the QM
+  // pile; set = a team took this specific sign. Orthogonal to `status` (a sign can
+  // leave QM before it's claimed/deployed). Flipped only by the group take/return
+  // action (signs/stock-actions.ts) behind UPDATE … WHERE id IN (SELECT … LIMIT n
+  // FOR UPDATE); every batch op is logged append-only in SignStockCheckout for
+  // replay-safety. "Remaining at QM" for a group = its rows where qmTakenAt IS NULL.
+  qmTakenAt     DateTime?    @map("qm_taken_at")
+  qmTakenBy     String?      @map("qm_taken_by")
+  doubleSided   Boolean      @default(false) @map("double_sided")
+  needsEasel    Boolean      @default(false) @map("needs_easel")
   // Item class (drives per-category counts + hardware need). Defaults to `other`
   // (an explicit "needs classifying" signal, not a silent guess); import + form set it.
-  category    SignCategory @default(other)
+  category      SignCategory @default(other)
   // Whether this row is physically printed. False for bare-easel rows ("(easels
   // only)") that need easels but no sign — counted toward easels, excluded from prints.
-  printable   Boolean      @default(true)
+  printable     Boolean      @default(true)
 
   // Placement
   placementArea      String?   @map("placement_area")
@@ -307,20 +306,12 @@ model Sign {
   approvedBy String?    @map("approved_by")
   approvedAt DateTime?  @map("approved_at")
 
-  // Art generation
-  templateId          Int?     @map("template_id")
-  psdGenerated        Boolean  @default(false) @map("psd_generated")
-  psdFilepath         String?  @map("psd_filepath")
-  psdApproved         Boolean  @default(false) @map("psd_approved")
-  fittedText          String?  @map("fitted_text")
-  calculatedFontSize  Int?     @map("calculated_font_size")
-  legibilityScore     Decimal? @map("legibility_score") @db.Decimal(3, 2)
-  needsManualReview   Boolean  @default(false) @map("needs_manual_review")
+  // Art generation (Figma pipeline). The legacy PSD-era columns + the dead
+  // SignTemplate model/FK were dropped in M17 #97 (migration
+  // drop_dead_signtemplate_psd_columns) — they had zero application code.
   generationPipeline  String?  @map("generation_pipeline")
   figmaInstanceNodeId String?  @map("figma_instance_node_id")
   previewImagePath    String?  @map("preview_image_path")
-  exportPdfPath       String?  @map("export_pdf_path")
-  generationError     String?  @map("generation_error")
   // The batch that last generated this sign (in-app generation orchestration).
   generationBatchId   Int?     @map("generation_batch_id")
 
@@ -387,7 +378,6 @@ model Sign {
 
   zone            Zone?               @relation(fields: [zoneId], references: [id])
   location        Location?           @relation(fields: [locationId], references: [id])
-  template        SignTemplate?       @relation(fields: [templateId], references: [id])
   generationBatch GenerationBatch?    @relation(fields: [generationBatchId], references: [id], onDelete: SetNull)
   statusHistory   StatusHistory[]
   tagAssignments  SignTagAssignment[]
@@ -402,7 +392,6 @@ model Sign {
   @@index([itemId])
   @@index([eventStart])
   @@index([deploymentSlot])
-  @@index([templateId])
   @@index([generationPipeline])
   @@index([generationBatchId])
   // Composite indexes for the list page's filter+sort (filter col first, then the
@@ -416,17 +405,45 @@ model Sign {
   @@index([status, deployByDate])
   // Delta-pull sync: changes() filters working statuses by updatedAt > cursor.
   @@index([status, updatedAt])
+  // QM checkout: "remaining at QM" / candidate-row selection filters a group's
+  // rows by qmTakenAt IS NULL (see signs/stock-actions.ts).
+  @@index([qmTakenAt])
   // Trigram GIN indexes for the list's free-text ILIKE search (the migration
   // also does CREATE EXTENSION pg_trgm, which the schema can't express).
   @@index([signText(ops: raw("gin_trgm_ops"))], type: Gin, map: "signs_sign_text_trgm_idx")
   @@index([itemId(ops: raw("gin_trgm_ops"))], type: Gin, map: "signs_item_id_trgm_idx")
   @@index([placementArea(ops: raw("gin_trgm_ops"))], type: Gin, map: "signs_placement_area_trgm_idx")
+  // M18 reconcile identity guard (#228): stops a repeat/concurrent reconcile apply
+  // from double-creating the same master-sheet space. The REAL index is PARTIAL —
+  // `WHERE is_test_data = false AND sheet_name IS NOT NULL AND status <> 'archived'`,
+  // which is what exempts test fixtures, the all-venue QM stock piles (N rows, NULL
+  // sheet_name), and soft-removal tombstones — a removed-then-re-added sign
+  // legitimately leaves one archived row beside its live replacement. Prisma
+  // cannot express a partial index, so the migration hand-writes it under exactly the
+  // name Prisma derives from this @@unique; declaring it here keeps `migrate dev`
+  // from seeing drift. Verified, not assumed: `prisma migrate diff
+  // --from-config-datasource --to-schema` against a shadow DB with all migrations
+  // applied reports an empty migration.
+  // CAUTION: because the DB index is partial, this compound key is NOT unique over
+  // the whole table — do NOT use `itemId_sheetName_category` as a findUnique/upsert
+  // selector, or it will silently resolve one of several test-data rows. The archived
+  // exemption makes that sharper: remove/re-add is a NORMAL flow, so multiple rows
+  // sharing this key is the expected steady state, not an edge case.
+  // See migrations/20260724120000_add_signs_sheet_identity_unique, whose predicate is
+  // superseded by 20260725030000_exempt_archived_from_sheet_identity_unique.
+  @@unique([itemId, sheetName, category])
   @@map("signs")
 }
 
 model StatusHistory {
   id        Int      @id @default(autoincrement())
   signId    Int      @map("sign_id")
+  // Discriminates what kind of change this row records. "status" (the default and
+  // the only historical value) uses old/new_status as SignStatus values; "format"
+  // uses them to carry the from/to format *labels* (e.g. "Foamcore 22×28"), so a
+  // reformat shows on the same per-sign timeline as a status change. The render
+  // layer branches on this so a format label never renders as a status badge.
+  changeType String  @default("status") @map("change_type")
   oldStatus String?  @map("old_status")
   newStatus String?  @map("new_status")
   changedBy String?  @map("changed_by")
@@ -533,6 +550,30 @@ model DeployEvent {
   @@index([crewId])
   @@index([createdAt])
   @@map("deploy_events")
+}
+
+// Append-only ledger of QM stock check-out / return *batches* — the idempotency
+// guard behind the per-row Sign.qmTakenAt flags. Mirrors DeployEvent: FK-free so a
+// row survives the signs it records being deleted, and loose actor refs (no FK to
+// User). A batch take/return flips N rows of a group at once; `groupKey` is the
+// serialized identity key the batch acted on (signText|signType|size|category|
+// doubleSided|needsEasel|printable|zoneId|deploymentSlot) and `delta` is signed
+// (+n = taken from QM, −n = returned). A unique clientId makes an at-least-once
+// replay (double-tap / offline retry) exactly-once. The flags are the source of
+// truth; this table is the replay guard + audit trail.
+model SignStockCheckout {
+  id        Int      @id @default(autoincrement())
+  clientId  String   @unique @map("client_id")
+  groupKey  String   @map("group_key")
+  delta     Int
+  byUserId  String?  @map("by_user_id")
+  byEmail   String?  @map("by_email")
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([groupKey])
+  @@index([createdAt])
+  @@map("sign_stock_checkouts")
 }
 
 // ============================================================

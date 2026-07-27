@@ -24,7 +24,26 @@ INSERT INTO "sign_tags" ("name", "slug", "color") VALUES
   ('Flying Sign',  'flying-sign',  '#FB7185'),
   ('Banner',       'banner',       '#F472B6'),
   ('Meter Board',  'meterboard',   '#94A3B8'),
-  ('Venue Map',    'venue-map',    '#2DD4BF')
+  ('Venue Map',    'venue-map',    '#2DD4BF'),
+  -- Added for DC34 master department -> tag mapping
+  ('Training',     'training',     '#6366F1'),
+  ('Goon',         'goon',         '#475569'),
+  ('Demo Labs',    'demo-labs',    '#7C3AED'),
+  ('EAC',          'eac',          '#DB2777'),
+  ('Talks',        'talks',        '#2563EB'),
+  ('NFO',          'nfo',          '#CA8A04'),
+  ('A&E',          'a-e',          '#EA580C'),
+  -- All-venue standing signs (QM stock pile): Code of Conduct, Hotline, venue
+  -- maps, etc. — the non-space bulk layer seeded by all-venue-signs.sql.
+  ('All-Venue',    'all-venue',    '#0891B2'),
+  -- Workflow status: a space whose live-sheet signage request is still a
+  -- "confirm with <person>" TODO (sign list not finalized). Filterable in the UI;
+  -- cleared as items get confirmed.
+  ('Needs Confirmation', 'needs-confirmation', '#DC2626'),
+  -- SYSTEM tag (M18): provenance marker for signs sourced from Nikita's master
+  -- Google Sheet. Reconcile scopes to it; the app hides it from the user tag
+  -- editor / filter chips (lib/tags.ts) so it can't be accidentally cleared.
+  ('Master Sheet', 'master-sheet', '#334155')
 ON CONFLICT ("slug") DO UPDATE
   SET "name"  = EXCLUDED."name",
       "color" = EXCLUDED."color";
